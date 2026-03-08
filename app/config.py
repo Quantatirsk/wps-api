@@ -1,0 +1,49 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
+import os
+
+
+def _get_bool_env(name: str, default: str) -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+@dataclass(frozen=True)
+class Settings:
+    api_prefix: str
+    service_name: str
+    workspace_root: Path
+    jobs_dir: Path
+    runtime_dir: Path
+    conversion_timeout_seconds: int
+    cleanup_max_age_seconds: int
+    max_upload_size_bytes: int
+    batch_max_files: int
+    pdf_use_ghostscript: bool
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    workspace_root = Path(os.getenv("WPS_WORKSPACE_ROOT", "/workspace"))
+    jobs_dir = workspace_root / "jobs"
+    runtime_dir = workspace_root / "runtime"
+    return Settings(
+        api_prefix="/api/v1",
+        service_name="wps-api-service",
+        workspace_root=workspace_root,
+        jobs_dir=jobs_dir,
+        runtime_dir=runtime_dir,
+        conversion_timeout_seconds=int(
+            os.getenv("WPS_CONVERSION_TIMEOUT_SECONDS", "120")
+        ),
+        cleanup_max_age_seconds=int(
+            os.getenv("WPS_CLEANUP_MAX_AGE_SECONDS", str(24 * 60 * 60))
+        ),
+        max_upload_size_bytes=int(
+            os.getenv("WPS_MAX_UPLOAD_SIZE_BYTES", str(50 * 1024 * 1024))
+        ),
+        batch_max_files=int(os.getenv("WPS_BATCH_MAX_FILES", "10")),
+        pdf_use_ghostscript=_get_bool_env("WPS_PDF_USE_GHOSTSCRIPT", "true"),
+    )
