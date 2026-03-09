@@ -75,7 +75,7 @@ class FamilyWorker:
         self._lock = asyncio.Lock()
         self._parent_conn: Connection | None = None
         self._process: multiprocessing.Process | None = None
-        self._last_used_monotonic: float | None = None
+        self._last_convert_monotonic: float | None = None
         self._session_process_pid: int | None = None
         self._cpu_sample: ProcessCpuSample | None = None
         self._hot_idle_sample_count = 0
@@ -117,7 +117,7 @@ class FamilyWorker:
                     f"{self.family} warm session failed: {exc}"
                 ) from exc
 
-            self._mark_session_alive(response["processPid"])
+            self._mark_convert_succeeded(response["processPid"])
             duration_ms = int((time.perf_counter() - started_at) * 1000)
             self.logger.info(
                 "warm_convert_succeeded family=%s warm_hit=%s duration_ms=%s process_pid=%s",
@@ -151,7 +151,7 @@ class FamilyWorker:
                     f"{self.family} warm prewarm failed: {exc}"
                 ) from exc
 
-            self._mark_session_alive(response["processPid"])
+            self._mark_session_ready(response["processPid"])
             duration_ms = int((time.perf_counter() - started_at) * 1000)
             self.logger.info(
                 "warm_prewarm_succeeded family=%s duration_ms=%s",
@@ -286,10 +286,10 @@ class FamilyWorker:
         if self._process is None or self._session_process_pid is None:
             self._reset_cpu_watch()
             return False
-        if self._last_used_monotonic is None:
+        if self._last_convert_monotonic is None:
             self._reset_cpu_watch()
             return False
-        idle_seconds = time.monotonic() - self._last_used_monotonic
+        idle_seconds = time.monotonic() - self._last_convert_monotonic
         if idle_seconds < HOT_IDLE_MIN_IDLE_SECONDS:
             self._reset_cpu_watch()
             return False
@@ -346,10 +346,13 @@ class FamilyWorker:
         except Exception:
             self._shutdown_process(force=True)
             raise
-        self._mark_session_alive(response["processPid"])
+        self._mark_session_ready(response["processPid"])
 
-    def _mark_session_alive(self, process_pid: int | None) -> None:
-        self._last_used_monotonic = time.monotonic()
+    def _mark_convert_succeeded(self, process_pid: int | None) -> None:
+        self._last_convert_monotonic = time.monotonic()
+        self._mark_session_ready(process_pid)
+
+    def _mark_session_ready(self, process_pid: int | None) -> None:
         self._session_process_pid = process_pid
         self._cpu_sample = None
         self._hot_idle_sample_count = 0
@@ -363,7 +366,7 @@ class FamilyWorker:
         process = self._process
         self._parent_conn = None
         self._process = None
-        self._last_used_monotonic = None
+        self._last_convert_monotonic = None
         self._session_process_pid = None
         self._cpu_sample = None
         self._hot_idle_sample_count = 0
