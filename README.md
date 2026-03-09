@@ -149,17 +149,15 @@ WPS_WORKER_COUNT=8 ./scripts/compose_up.sh
 
 - 1 个 `wps-api`
 - 1 个 `wps-worker`
-- 1 个 `wps-worker-lb`
 
 ### 默认行为
 
 - `wps-api`: 对外 dispatcher，默认暴露到 `18000`
-- `wps-worker`: 可横向扩容的实际转换节点
-- `wps-worker-lb`: 内部轻量负载均衡，仅给 dispatcher 使用
+- `wps-worker`: 可横向扩容的实际转换节点；dispatcher 直接通过 Docker service 名称访问它
 
 ### 常用环境变量
 
-- `WPS_WORKER_COUNT`: worker 数量，默认 `8`
+- `WPS_WORKER_COUNT`: worker 数量，默认 `8`；compose 也会把它作为 dispatcher 的默认分发并发度
 - `WPS_API_PORT`: 对外端口，默认 `18000`
 - `WPS_DISPATCHER_REQUEST_TIMEOUT_SECONDS`: dispatcher 到 worker 超时，默认 `180`
 - `WPS_BATCH_MAX_FILES`: batch 最大文件数，默认 `10`
@@ -170,6 +168,25 @@ WPS_WORKER_COUNT=8 ./scripts/compose_up.sh
 ```bash
 docker compose -f docker/docker-compose.yml down --remove-orphans
 ```
+
+## 远程部署
+
+远程服务器不需要额外的部署脚本；只要目标机上已经有该仓库工作树，并且镜像已构建，就直接使用 `scripts/compose_up.sh` 启动。
+
+标准步骤：
+
+```bash
+git clone https://github.com/Quantatirsk/wps-api.git
+cd wps-api
+./scripts/build_image.sh
+WPS_WORKER_COUNT=8 ./scripts/compose_up.sh
+```
+
+约束：
+
+- 标准启动入口仍然只有 `scripts/compose_up.sh`
+- 不再保留仓库内的远程拉取部署脚本
+- 如果镜像不存在，`compose_up.sh` 会直接失败并提示先构建镜像
 
 ## 本地调试
 
@@ -193,7 +210,8 @@ docker compose -f docker/docker-compose.yml down --remove-orphans
 - `WPS_CLEANUP_MAX_AGE_SECONDS`: 历史任务清理阈值，默认 `86400`
 - `WPS_MAX_UPLOAD_SIZE_BYTES`: 上传大小上限，默认 `52428800`
 - `WPS_BATCH_MAX_FILES`: 批量文件数上限，默认 `10`
-- `WPS_BATCH_WORKER_URLS`: worker 基础地址列表；配置后批量接口会启用远程分发
+- `WPS_BATCH_WORKER_URL`: worker 基础地址；配置后批量接口会启用远程分发
+- `WPS_BATCH_WORKER_CONCURRENCY`: dispatcher 发往 worker 的并发度，默认 `1`
 - `WPS_DISPATCHER_REQUEST_TIMEOUT_SECONDS`: dispatcher 调 worker 的超时秒数，默认 `180`
 
 ## 边界

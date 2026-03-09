@@ -6,10 +6,9 @@ from pathlib import Path
 import os
 
 
-def _get_csv_env(name: str) -> tuple[str, ...]:
-    value = os.getenv(name, "")
-    parts = [item.strip().rstrip("/") for item in value.split(",")]
-    return tuple(item for item in parts if item)
+def _get_optional_env(name: str) -> str | None:
+    value = os.getenv(name, "").strip().rstrip("/")
+    return value or None
 
 
 @dataclass(frozen=True)
@@ -23,7 +22,8 @@ class Settings:
     cleanup_max_age_seconds: int
     max_upload_size_bytes: int
     batch_max_files: int
-    batch_worker_urls: tuple[str, ...]
+    batch_worker_url: str | None
+    batch_worker_concurrency: int
     dispatcher_request_timeout_seconds: int
 
 
@@ -48,7 +48,10 @@ def get_settings() -> Settings:
             os.getenv("WPS_MAX_UPLOAD_SIZE_BYTES", str(50 * 1024 * 1024))
         ),
         batch_max_files=int(os.getenv("WPS_BATCH_MAX_FILES", "10")),
-        batch_worker_urls=_get_csv_env("WPS_BATCH_WORKER_URLS"),
+        batch_worker_url=_get_optional_env("WPS_BATCH_WORKER_URL"),
+        batch_worker_concurrency=int(
+            os.getenv("WPS_BATCH_WORKER_CONCURRENCY", "1")
+        ),
         dispatcher_request_timeout_seconds=int(
             os.getenv("WPS_DISPATCHER_REQUEST_TIMEOUT_SECONDS", "180")
         ),

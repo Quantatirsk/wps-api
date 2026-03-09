@@ -93,8 +93,7 @@ COPY docker/conf/Office.conf /root/.config/Kingsoft/Office.conf
 
 COPY docker/conf/xorg.conf /etc/X11/xorg-dummy.conf
 COPY docker/entrypoint.sh /entrypoint.sh
-COPY docker/dispatcher-entrypoint.sh /dispatcher-entrypoint.sh
-RUN chmod +x /entrypoint.sh /dispatcher-entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 COPY app /app/app
 

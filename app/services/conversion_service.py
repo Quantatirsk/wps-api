@@ -131,7 +131,7 @@ class ConversionService:
             await self._prepare_job(upload_file) for upload_file in upload_files
         ]
 
-        if self.settings.batch_worker_urls:
+        if self.settings.batch_worker_url:
             return await self._convert_files_to_pdf_batch_via_workers(prepared_jobs)
 
         results = await asyncio.gather(
@@ -164,21 +164,27 @@ class ConversionService:
         self,
         prepared_jobs: list[PreparedConversionJob],
     ) -> BatchConversionResult:
-        indexed_jobs = list(enumerate(prepared_jobs))
-        worker_urls = self.settings.batch_worker_urls
+        worker_url = self.settings.batch_worker_url
+        if worker_url is None:
+            raise WpsConversionError("batch worker url is not configured")
+
+        concurrency = min(
+            len(prepared_jobs),
+            max(self.settings.batch_worker_concurrency, 1),
+        )
         buckets: list[list[tuple[int, PreparedConversionJob]]] = [
-            [] for _ in worker_urls
+            [] for _ in range(concurrency)
         ]
-        for index, prepared_job in indexed_jobs:
-            bucket_index = index % len(worker_urls)
+        for index, prepared_job in enumerate(prepared_jobs):
+            bucket_index = index % concurrency
             buckets[bucket_index].append((index, prepared_job))
 
         timeout = httpx.Timeout(self.settings.dispatcher_request_timeout_seconds)
         async with httpx.AsyncClient(timeout=timeout) as client:
             bucket_results = await asyncio.gather(
                 *(
-                    self._dispatch_bucket(client, worker_urls[index], bucket)
-                    for index, bucket in enumerate(buckets)
+                    self._dispatch_bucket(client, worker_url, bucket)
+                    for bucket in buckets
                     if bucket
                 ),
                 return_exceptions=True,
@@ -276,17 +282,17 @@ class ConversionService:
             prepared_job.job_paths,
             {
                 "jobId": result.job_id,
+                "mode": "dispatched",
                 "documentFamily": result.document_family,
                 "inputFilename": result.input_filename,
-                "inputSize": prepared_job.input_size,
                 "outputFilename": result.output_filename,
-                "outputSize": get_file_size(result.output_path),
+                "workerUrl": result.worker_url,
                 "queueWaitMs": result.queue_wait_ms,
                 "convertMs": result.convert_ms,
                 "durationMs": result.duration_ms,
                 "processPid": result.process_pid,
-                "workerUrl": result.worker_url,
                 "status": "succeeded",
+                "fileSize": get_file_size(result.output_path),
             },
         )
         self.logger.info(
@@ -302,19 +308,18 @@ class ConversionService:
         self,
         prepared_job: PreparedConversionJob,
     ) -> ConversionJobResult:
-        started_at = time.perf_counter()
-        self.logger.info(
-            "conversion_started job_id=%s file=%s family=%s size=%s",
-            prepared_job.job_paths.job_id,
-            prepared_job.input_filename,
-            prepared_job.route.document_family,
-            prepared_job.input_size,
-        )
-
-        try:
-            async with prepared_job.route.lock:
-                lock_acquired_at = time.perf_counter()
-                details = await asyncio.wait_for(
+        queued_at = time.perf_counter()
+        async with prepared_job.route.lock:
+            started_at = time.perf_counter()
+            self.logger.info(
+                "conversion_started job_id=%s family=%s file=%s size=%s",
+                prepared_job.job_paths.job_id,
+                prepared_job.route.document_family,
+                prepared_job.input_filename,
+                prepared_job.input_size,
+            )
+            try:
+                conversion_details = await asyncio.wait_for(
                     asyncio.to_thread(
                         prepared_job.route.adapter.convert_to_pdf,
                         prepared_job.job_paths.input_path,
@@ -322,48 +327,25 @@ class ConversionService:
                     ),
                     timeout=self.settings.conversion_timeout_seconds,
                 )
-        except TimeoutError as exc:
-            cleanup_job_dir(prepared_job.job_paths.job_dir)
-            raise ConversionTimeoutError() from exc
-        except Exception:
-            cleanup_job_dir(prepared_job.job_paths.job_dir)
-            raise
+            except ConversionTimeoutError:
+                cleanup_job_dir(prepared_job.job_paths.job_dir)
+                raise
+            except TimeoutError as exc:
+                cleanup_job_dir(prepared_job.job_paths.job_dir)
+                raise ConversionTimeoutError("conversion timed out") from exc
+            except Exception as exc:
+                cleanup_job_dir(prepared_job.job_paths.job_dir)
+                raise WpsConversionError(str(exc)) from exc
 
-        if not prepared_job.job_paths.output_path.exists():
-            cleanup_job_dir(prepared_job.job_paths.job_dir)
-            raise WpsConversionError("conversion completed without output file")
+            if not prepared_job.job_paths.output_path.exists():
+                cleanup_job_dir(prepared_job.job_paths.job_dir)
+                raise WpsConversionError("conversion completed without output file")
 
         finished_at = time.perf_counter()
-        queue_wait_ms = int((lock_acquired_at - started_at) * 1000)
-        convert_ms = int((finished_at - lock_acquired_at) * 1000)
-        duration_ms = int((finished_at - started_at) * 1000)
-        write_job_metadata(
-            prepared_job.job_paths,
-            {
-                "jobId": prepared_job.job_paths.job_id,
-                "documentFamily": prepared_job.route.document_family,
-                "inputFilename": prepared_job.input_filename,
-                "inputSize": get_file_size(prepared_job.job_paths.input_path),
-                "outputFilename": prepared_job.output_filename,
-                "outputSize": get_file_size(prepared_job.job_paths.output_path),
-                "queueWaitMs": queue_wait_ms,
-                "convertMs": convert_ms,
-                "durationMs": duration_ms,
-                "processPid": details.process_pid,
-                "workerUrl": None,
-                "status": "succeeded",
-            },
-        )
-        self.logger.info(
-            "conversion_succeeded job_id=%s family=%s queue_wait_ms=%s convert_ms=%s duration_ms=%s pid=%s",
-            prepared_job.job_paths.job_id,
-            prepared_job.route.document_family,
-            queue_wait_ms,
-            convert_ms,
-            duration_ms,
-            details.process_pid,
-        )
-        return ConversionJobResult(
+        queue_wait_ms = int((started_at - queued_at) * 1000)
+        convert_ms = int((finished_at - started_at) * 1000)
+        duration_ms = int((finished_at - queued_at) * 1000)
+        result = ConversionJobResult(
             job_id=prepared_job.job_paths.job_id,
             job_dir=prepared_job.job_paths.job_dir,
             output_path=prepared_job.job_paths.output_path,
@@ -373,13 +355,39 @@ class ConversionService:
             queue_wait_ms=queue_wait_ms,
             convert_ms=convert_ms,
             duration_ms=duration_ms,
-            process_pid=details.process_pid,
+            process_pid=conversion_details.process_pid,
             worker_url=None,
         )
+        write_job_metadata(
+            prepared_job.job_paths,
+            {
+                "jobId": result.job_id,
+                "mode": "local",
+                "documentFamily": result.document_family,
+                "inputFilename": result.input_filename,
+                "outputFilename": result.output_filename,
+                "workerUrl": None,
+                "queueWaitMs": result.queue_wait_ms,
+                "convertMs": result.convert_ms,
+                "durationMs": result.duration_ms,
+                "processPid": result.process_pid,
+                "status": "succeeded",
+                "fileSize": get_file_size(result.output_path),
+            },
+        )
+        self.logger.info(
+            "conversion_succeeded job_id=%s family=%s queue_wait_ms=%s convert_ms=%s total_ms=%s",
+            result.job_id,
+            result.document_family,
+            result.queue_wait_ms,
+            result.convert_ms,
+            result.duration_ms,
+        )
+        return result
 
     def _build_batch_result(
         self,
-        results: list[ConversionJobResult] | list[Exception | ConversionJobResult],
+        results: list[ConversionJobResult | Exception],
     ) -> BatchConversionResult:
         exceptions = [result for result in results if isinstance(result, Exception)]
         successful_results = [

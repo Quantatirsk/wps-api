@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 
@@ -9,7 +11,15 @@ class ConversionDetails:
     process_pid: int | None
 
 
-class BaseWpsAdapter:
+class BaseWpsAdapter(ABC):
+    @abstractmethod
+    def convert_to_pdf(
+        self,
+        input_path: Path,
+        output_path: Path,
+    ) -> ConversionDetails:
+        raise NotImplementedError
+
     def _get_process_pid(self, rpc: Any, success_code: int) -> int | None:
         try:
             hr, pid = rpc.getProcessPid()
