@@ -1,8 +1,8 @@
-name: wps-api-service
+name: wps-api
 
 services:
-  wps-api-service:
-    image: ${WPS_IMAGE:-quantatrisk/wps-api-service:latest}
+  wps-api:
+    image: ${WPS_IMAGE:-quantatrisk/wps-api:latest}
     restart: unless-stopped
     ports:
       - "${WPS_API_PORT:-18000}:8000"
@@ -20,7 +20,7 @@ services:
       - wps-net
 
   wps-worker:
-    image: ${WPS_IMAGE:-quantatrisk/wps-api-service:latest}
+    image: ${WPS_IMAGE:-quantatrisk/wps-api:latest}
     restart: unless-stopped
     environment:
       WPS_WORKSPACE_ROOT: /workspace

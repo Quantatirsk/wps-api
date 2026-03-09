@@ -3,7 +3,7 @@ set -euo pipefail
 
 compose_file="docker/docker-compose.yml"
 worker_count="${WPS_WORKER_COUNT:-8}"
-image_name="${WPS_IMAGE:-quantatrisk/wps-api-service:latest}"
+image_name="${WPS_IMAGE:-quantatrisk/wps-api:latest}"
 
 if ! [[ "${worker_count}" =~ ^[0-9]+$ ]] || [[ "${worker_count}" -lt 1 ]]; then
   echo "WPS_WORKER_COUNT must be an integer greater than 0" >&2
@@ -17,4 +17,5 @@ if ! docker image inspect "${image_name}" >/dev/null 2>&1; then
 fi
 
 echo "Starting cluster with ${worker_count} workers using ${image_name}"
+echo "This is the only supported startup entrypoint. Do not run docker compose up directly."
 exec docker compose -f "${compose_file}" up -d --scale wps-worker="${worker_count}"

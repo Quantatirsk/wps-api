@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-default_image_name="quantatrisk/wps-api-service"
+default_image_name="quantatrisk/wps-api"
 default_image_tag="latest"
 default_dockerfile_path="docker/Dockerfile"
 

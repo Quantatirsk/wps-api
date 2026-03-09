@@ -1,40 +1,24 @@
-# WPS API Service
+# WPS API
 
-这是一个基于 `WPS Office for Linux + pywpsrpc + FastAPI` 的无头 PDF 转换服务。
+`WPS API` 是一个基于 `WPS Office for Linux + pywpsrpc + FastAPI` 的无头 PDF 转换服务。
 
-它的职责很单一：
+它专注做一件事：
 
-- 接收 `doc` / `docx`
-- 接收 `ppt` / `pptx`
-- 接收 `xls` / `xlsx`
+- 接收 Office 文档
 - 调用 WPS 导出 PDF
-- 直接返回 PDF 或批量 ZIP
+- 返回单个 PDF 或批量 ZIP
 
-当前版本刻意保持 KISS：
+## 功能
 
-- 只做 `convert to pdf`
-- 不做任务队列
-- 不做数据库
-- 不做 Ghostscript 后处理
-- 不改 `pywpsrpc` 上游源码
+当前支持这些能力：
 
-## 为什么现在不再做 PDF 后处理
-
-这轮排查后的结论已经很明确：
-
-- `docx -> pdf` 体积膨胀的根因，不是“Linux WPS 天然导出很大”
-- 真正根因是部分字体文件的嵌入权限不对，导致正文文本被光栅化为图片
-- 典型案例是旧版 `方正仿宋简体`，嵌入权限为 `0x2`
-- 当替换为可嵌入版本后，PDF 体积和转换速度都会恢复正常
-
-所以当前策略已经收敛为：
-
-1. 镜像内置中文字体包
-2. 启动时刷新字体缓存
-3. WPS 直接导出 PDF
-4. 服务直接返回结果
-
-这比“先导出，再额外压缩十几秒”更符合 KISS 和 Fail-Fast。
+- `doc` / `docx` 转 PDF
+- `ppt` / `pptx` 转 PDF
+- `xls` / `xlsx` 转 PDF
+- 单文件转换
+- 多文件批量转换
+- 批量分发到多个 worker 提高吞吐
+- 健康检查与运行环境检查
 
 ## API
 
@@ -50,7 +34,9 @@
 
 ### `GET /api/v1/readyz`
 
-运行环境检查。当前只验证真正必需的条件：
+运行环境检查。
+
+当前会检查：
 
 - `jobs` 目录可写
 - `runtime` 目录可写
@@ -114,7 +100,7 @@ curl -X POST \
 最简单的方式：
 
 ```bash
-docker build -f docker/Dockerfile -t quantatrisk/wps-api-service:local .
+docker build -f docker/Dockerfile -t quantatrisk/wps-api:local .
 ```
 
 也可以使用交互式脚本：
@@ -123,7 +109,7 @@ docker build -f docker/Dockerfile -t quantatrisk/wps-api-service:local .
 ./scripts/build_image.sh
 ```
 
-当前 `docker/Dockerfile` 默认会：
+`docker/Dockerfile` 会：
 
 - 下载 WPS Linux 安装包
 - 下载 `https://software.cdn.vect.one/Fonts.zip`
@@ -136,57 +122,48 @@ docker build \
   -f docker/Dockerfile \
   --build-arg WPS_DEB_URL_BASE=https://your-mirror.example.com/wps-office.deb \
   --build-arg FONTS_ZIP_URL=https://your-cdn.example.com/Fonts.zip \
-  -t quantatrisk/wps-api-service:local .
+  -t quantatrisk/wps-api:local .
 ```
 
-### 运行容器
+### 运行单容器
 
 ```bash
 docker run --rm \
   -p 8000:8000 \
   -v $(pwd)/workspace:/workspace \
-  quantatrisk/wps-api-service:local
+  quantatrisk/wps-api:local
 ```
 
-### 使用 Docker Compose 启动集群
+### 启动集群
 
-当前远程 `8 workers` 部署，本质上是用多个 `docker run` 手工拉起：
-
-- 1 个 dispatcher
-- N 个 worker
-- 一个内部网络
-
-现在仓库里已经补上更适合长期维护的 `docker/docker-compose.yml`，推荐以后优先用它。
-
-先构建镜像，再启动 compose。`docker/docker-compose.yml` 本身不负责构建镜像。
-
-最简单的启动方式：
+标准启动方式只有一种：
 
 ```bash
 ./scripts/build_image.sh
 WPS_WORKER_COUNT=8 ./scripts/compose_up.sh
 ```
 
-如果你更喜欢直接用 `docker compose` 命令：
+不要直接执行 `docker compose up`。
 
-```bash
-export WPS_WORKER_COUNT=8
-docker compose -f docker/docker-compose.yml up -d --scale wps-worker=$WPS_WORKER_COUNT
-```
+因为 `docker/docker-compose.yml` 只定义 service，不会按 `WPS_WORKER_COUNT` 自动扩容 worker；直接执行时通常只会启动：
 
-默认行为：
+- 1 个 `wps-api`
+- 1 个 `wps-worker`
+- 1 个 `wps-worker-lb`
 
-- `wps-api-service`: 对外 dispatcher，默认暴露到 `18000`
+### 默认行为
+
+- `wps-api`: 对外 dispatcher，默认暴露到 `18000`
 - `wps-worker`: 可横向扩容的实际转换节点
-- `wps-worker-lb`: 内部轻量负载均衡，仅给 dispatcher 使用，配置已内嵌在 compose 文件里
+- `wps-worker-lb`: 内部轻量负载均衡，仅给 dispatcher 使用
 
-常用环境变量：
+### 常用环境变量
 
 - `WPS_WORKER_COUNT`: worker 数量，默认 `8`
 - `WPS_API_PORT`: 对外端口，默认 `18000`
 - `WPS_DISPATCHER_REQUEST_TIMEOUT_SECONDS`: dispatcher 到 worker 超时，默认 `180`
 - `WPS_BATCH_MAX_FILES`: batch 最大文件数，默认 `10`
-- `WPS_IMAGE`: compose 使用的镜像名，默认 `quantatrisk/wps-api-service:latest`
+- `WPS_IMAGE`: compose 使用的镜像名，默认 `quantatrisk/wps-api:latest`
 
 停止并清理：
 
@@ -209,23 +186,6 @@ docker compose -f docker/docker-compose.yml down --remove-orphans
 ./scripts/smoke_test_api.sh tests/files/经责审计报告示例.docx
 ```
 
-## Dispatcher 模式
-
-如果你想把 `docx` 批量吞吐提高到 `2x~4x`，推荐把当前服务作为轻量 dispatcher 使用，再横向起多个 worker 实例。
-
-当前实现保持这些原则：
-
-- 单文件接口仍然走本地 WPS 转换
-- 批量接口在配置了 worker 列表后，会按轮询把文件分发到多个远程 worker
-- 每个 worker 仍保持单实例内同文档族串行，稳定性边界不变
-
-典型部署方式：
-
-- 1 个 dispatcher
-- 2~4 个 worker
-- dispatcher 的 `POST /api/v1/convert-to-pdf/batch` 负责分发和打包
-- worker 继续暴露同一个 `POST /api/v1/convert-to-pdf` 单文件接口
-
 ## 环境变量
 
 - `WPS_WORKSPACE_ROOT`: 工作目录根路径，默认 `/workspace`
@@ -233,19 +193,11 @@ docker compose -f docker/docker-compose.yml down --remove-orphans
 - `WPS_CLEANUP_MAX_AGE_SECONDS`: 历史任务清理阈值，默认 `86400`
 - `WPS_MAX_UPLOAD_SIZE_BYTES`: 上传大小上限，默认 `52428800`
 - `WPS_BATCH_MAX_FILES`: 批量文件数上限，默认 `10`
-- `WPS_BATCH_WORKER_URLS`: 逗号分隔的 worker 基础地址列表；配置后批量接口会启用远程分发
+- `WPS_BATCH_WORKER_URLS`: worker 基础地址列表；配置后批量接口会启用远程分发
 - `WPS_DISPATCHER_REQUEST_TIMEOUT_SECONDS`: dispatcher 调 worker 的超时秒数，默认 `180`
 
-示例：
+## 边界
 
-```bash
-export WPS_BATCH_WORKER_URLS=http://10.0.0.11:8000,http://10.0.0.12:8000,http://10.0.0.13:8000
-export WPS_DISPATCHER_REQUEST_TIMEOUT_SECONDS=180
-```
-
-## 当前实现边界
-
-- 单实例内同文档族串行执行，避免 WPS 自动化通道互相干扰
+- 单实例内同文档族串行执行，避免 WPS 自动化互相干扰
 - 批量接口是受控并发，不保证部分成功返回
 - 当前没有鉴权、队列、重试中心和任务持久化
-- 如果字体缺失或字体嵌入权限异常，输出体积与兼容性会明显变差

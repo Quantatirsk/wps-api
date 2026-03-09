@@ -4,10 +4,10 @@ set -euo pipefail
 REMOTE_HOST="${REMOTE_HOST:-192.168.6.228}"
 REMOTE_USER="${REMOTE_USER:-root}"
 REMOTE_PORT="${REMOTE_PORT:-22}"
-REMOTE_DIR="${REMOTE_DIR:-/opt/wps-api-service}"
-GIT_URL="${GIT_URL:-https://github.com/Quantatirsk/wps-api-service.git}"
+REMOTE_DIR="${REMOTE_DIR:-/opt/wps-api}"
+GIT_URL="${GIT_URL:-https://github.com/Quantatirsk/wps-api.git}"
 GIT_BRANCH="${GIT_BRANCH:-main}"
-IMAGE_NAME="${IMAGE_NAME:-quantatrisk/wps-api-service:latest}"
+IMAGE_NAME="${IMAGE_NAME:-quantatrisk/wps-api:latest}"
 PUBLIC_PORT="${PUBLIC_PORT:-18000}"
 WORKER_COUNT="${WORKER_COUNT:-8}"
 DISPATCHER_TIMEOUT_SECONDS="${DISPATCHER_TIMEOUT_SECONDS:-180}"
@@ -35,7 +35,7 @@ trap 'rm -f "${remote_script}"' EXIT
   printf 'WPS_IMAGE=%q WPS_WORKER_COUNT=%q WPS_API_PORT=%q WPS_DISPATCHER_REQUEST_TIMEOUT_SECONDS=%q docker compose -f docker/docker-compose.yml up -d --scale wps-worker=%q\n' "${IMAGE_NAME}" "${WORKER_COUNT}" "${PUBLIC_PORT}" "${DISPATCHER_TIMEOUT_SECONDS}" "${WORKER_COUNT}"
   printf 'sleep 5\n'
   printf 'printf "\\n== containers ==\\n"\n'
-  printf 'docker ps --format "table {{.Names}}\\t{{.Status}}\\t{{.Ports}}" | grep -E "^NAMES|^wps-api-service|^wps-worker|^wps-worker-lb"\n'
+  printf 'docker ps --format "table {{.Names}}\\t{{.Status}}\\t{{.Ports}}" | grep -E "^NAMES|^wps-api|^wps-worker|^wps-worker-lb"\n'
   printf 'printf "\\n== memory ==\\n"\n'
   printf 'free -h\n'
   printf 'printf "\\n== readyz ==\\n"\n'

@@ -34,7 +34,7 @@ def get_settings() -> Settings:
     runtime_dir = workspace_root / "runtime"
     return Settings(
         api_prefix="/api/v1",
-        service_name="wps-api-service",
+        service_name="wps-api",
         workspace_root=workspace_root,
         jobs_dir=jobs_dir,
         runtime_dir=runtime_dir,
