@@ -159,15 +159,25 @@ class FamilyWorker:
                 duration_ms,
             )
 
-    async def run_maintenance(self, timeout_seconds: int) -> None:
+    async def run_maintenance(self, timeout_seconds: int) -> bool:
         if self._lock.locked():
-            return
+            return False
 
         async with self._lock:
-            await self._recycle_if_hot_idle(timeout_seconds)
+            return await self._recycle_if_hot_idle(timeout_seconds)
 
     def close(self) -> None:
         self._shutdown_process(force=False)
+
+    def is_ready(self) -> bool:
+        process = self._process
+        return (
+            process is not None
+            and process.is_alive()
+            and self._parent_conn is not None
+            and self._session_process_pid is not None
+            and not self._lock.locked()
+        )
 
     def _ensure_process(self) -> None:
         if (
@@ -270,19 +280,19 @@ class FamilyWorker:
         error_cls = ERROR_TYPES.get(error_type, WpsConversionError)
         return error_cls(message)
 
-    async def _recycle_if_hot_idle(self, timeout_seconds: int) -> None:
+    async def _recycle_if_hot_idle(self, timeout_seconds: int) -> bool:
         if not supports_process_cpu_sampling():
-            return
+            return False
         if self._process is None or self._session_process_pid is None:
             self._reset_cpu_watch()
-            return
+            return False
         if self._last_used_monotonic is None:
             self._reset_cpu_watch()
-            return
+            return False
         idle_seconds = time.monotonic() - self._last_used_monotonic
         if idle_seconds < HOT_IDLE_MIN_IDLE_SECONDS:
             self._reset_cpu_watch()
-            return
+            return False
 
         current_sample, cpu_percent = sample_process_cpu_percent(
             self._session_process_pid,
@@ -296,12 +306,12 @@ class FamilyWorker:
                 self._session_process_pid,
             )
             self._shutdown_process(force=True)
-            return
+            return True
         if cpu_percent is None:
-            return
+            return False
         if cpu_percent < HOT_IDLE_CPU_PERCENT:
             self._hot_idle_sample_count = 0
-            return
+            return False
 
         self._hot_idle_sample_count += 1
         self.logger.warning(
@@ -314,7 +324,7 @@ class FamilyWorker:
             self._hot_idle_sample_count,
         )
         if self._hot_idle_sample_count < HOT_IDLE_REQUIRED_SAMPLES:
-            return
+            return False
 
         self.logger.warning(
             "warm_worker_restarting_hot_idle family=%s worker_name=%s session_pid=%s",
@@ -333,6 +343,7 @@ class FamilyWorker:
             self._shutdown_process(force=True)
             raise
         self._mark_session_alive(response["processPid"])
+        return True
 
     def _mark_session_alive(self, process_pid: int | None) -> None:
         self._last_used_monotonic = time.monotonic()
@@ -406,7 +417,7 @@ class FamilyWorkerPool:
         output_path: Path,
         timeout_seconds: int,
     ) -> WarmConversionResult:
-        worker = self._workers[next(self._cursor) % len(self._workers)]
+        worker = self._select_worker()
         self.logger.info(
             "warm_pool_dispatch family=%s worker_name=%s input=%s",
             self.family,
@@ -420,12 +431,43 @@ class FamilyWorkerPool:
             await worker.prewarm(timeout_seconds)
 
     async def run_maintenance(self, timeout_seconds: int) -> None:
-        for worker in self._workers:
-            await worker.run_maintenance(timeout_seconds)
+        worker_count = len(self._workers)
+        if worker_count <= 1:
+            await self._workers[0].run_maintenance(timeout_seconds)
+            return
+
+        restart_budget = worker_count - 1
+        restarted_count = 0
+        start_index = next(self._cursor) % worker_count
+        ordered_workers = [
+            self._workers[(start_index + offset) % worker_count]
+            for offset in range(worker_count)
+        ]
+        for worker in ordered_workers:
+            if restarted_count >= restart_budget:
+                break
+            if self._ready_worker_count() <= 1 and restarted_count > 0:
+                break
+            restarted = await worker.run_maintenance(timeout_seconds)
+            if restarted:
+                restarted_count += 1
 
     def close(self) -> None:
         for worker in self._workers:
             worker.close()
+
+    def _select_worker(self) -> FamilyWorker:
+        worker_count = len(self._workers)
+        start_index = next(self._cursor) % worker_count
+        fallback_worker = self._workers[start_index]
+        for offset in range(worker_count):
+            worker = self._workers[(start_index + offset) % worker_count]
+            if worker.is_ready():
+                return worker
+        return fallback_worker
+
+    def _ready_worker_count(self) -> int:
+        return sum(1 for worker in self._workers if worker.is_ready())
 
 
 class WarmSessionManager:
