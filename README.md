@@ -178,7 +178,7 @@ docker compose -f docker/docker-compose.yml up -d --scale wps-worker=$WPS_WORKER
 
 - `wps-api-service`: 对外 dispatcher，默认暴露到 `18000`
 - `wps-worker`: 可横向扩容的实际转换节点
-- `wps-worker-lb`: 内部轻量负载均衡，仅给 dispatcher 使用
+- `wps-worker-lb`: 内部轻量负载均衡，仅给 dispatcher 使用，配置已内嵌在 compose 文件里
 
 常用环境变量：
 
