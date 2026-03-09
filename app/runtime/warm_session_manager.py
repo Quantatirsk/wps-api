@@ -14,6 +14,11 @@ from app.adapters.presentation_adapter import PresentationAdapter
 from app.adapters.spreadsheet_adapter import SpreadsheetAdapter
 from app.adapters.writer_adapter import WriterAdapter
 from app.config import Settings
+from app.utils.cpu import (
+    ProcessCpuSample,
+    sample_process_cpu_percent,
+    supports_process_cpu_sampling,
+)
 from app.utils.errors import (
     AppError,
     ConversionTimeoutError,
@@ -39,6 +44,10 @@ PREWARM_FAMILY_ORDER = (
     FAMILY_SPREADSHEET,
     FAMILY_PRESENTATION,
 )
+JANITOR_INTERVAL_SECONDS = 15
+HOT_IDLE_CPU_PERCENT = 80.0
+HOT_IDLE_MIN_IDLE_SECONDS = 30
+HOT_IDLE_REQUIRED_SAMPLES = 2
 
 _MANAGER: WarmSessionManager | None = None
 
@@ -67,6 +76,9 @@ class FamilyWorker:
         self._parent_conn: Connection | None = None
         self._process: multiprocessing.Process | None = None
         self._last_used_monotonic: float | None = None
+        self._session_process_pid: int | None = None
+        self._cpu_sample: ProcessCpuSample | None = None
+        self._hot_idle_sample_count = 0
 
     async def convert(
         self,
@@ -106,7 +118,7 @@ class FamilyWorker:
                     f"{self.family} warm session failed: {exc}"
                 ) from exc
 
-            self._last_used_monotonic = time.monotonic()
+            self._mark_session_alive(response["processPid"])
             duration_ms = int((time.perf_counter() - started_at) * 1000)
             self.logger.info(
                 "warm_convert_succeeded family=%s warm_hit=%s duration_ms=%s process_pid=%s",
@@ -126,7 +138,10 @@ class FamilyWorker:
             self._ensure_process()
             started_at = time.perf_counter()
             try:
-                await asyncio.to_thread(self._send_prewarm_request, timeout_seconds)
+                response = await asyncio.to_thread(
+                    self._send_prewarm_request,
+                    timeout_seconds,
+                )
             except AppError:
                 self.logger.exception("warm_prewarm_failed family=%s", self.family)
                 self._shutdown_process(force=True)
@@ -138,13 +153,22 @@ class FamilyWorker:
                     f"{self.family} warm prewarm failed: {exc}"
                 ) from exc
 
-            self._last_used_monotonic = time.monotonic()
+            self._mark_session_alive(response["processPid"])
             duration_ms = int((time.perf_counter() - started_at) * 1000)
             self.logger.info(
                 "warm_prewarm_succeeded family=%s duration_ms=%s",
                 self.family,
                 duration_ms,
             )
+
+    async def run_maintenance(self, timeout_seconds: int) -> None:
+        if self._lock.locked():
+            return
+
+        async with self._lock:
+            if self._recycle_if_idle():
+                return
+            await self._recycle_if_hot_idle(timeout_seconds)
 
     def close(self) -> None:
         self._shutdown_process(force=False)
@@ -202,12 +226,13 @@ class FamilyWorker:
 
         return response
 
-    def _send_prewarm_request(self, timeout_seconds: int) -> None:
+    def _send_prewarm_request(self, timeout_seconds: int) -> dict[str, Any]:
         response = self._send_request({"type": "prewarm"}, timeout_seconds)
         if not response.get("ok", False):
             error_type = str(response.get("errorType", "WpsStartupError"))
             message = str(response.get("message", "warm worker prewarm failed"))
             raise self._build_error(error_type, message)
+        return response
 
     def _send_request(
         self,
@@ -249,18 +274,93 @@ class FamilyWorker:
         error_cls = ERROR_TYPES.get(error_type, WpsConversionError)
         return error_cls(message)
 
-    def _recycle_if_idle(self) -> None:
+    def _recycle_if_idle(self) -> bool:
         if self._last_used_monotonic is None:
-            return
+            return False
         idle_seconds = time.monotonic() - self._last_used_monotonic
         if idle_seconds <= self.settings.warm_session_idle_ttl_seconds:
-            return
+            return False
         self.logger.info(
             "warm_worker_recycled_idle family=%s idle_seconds=%.2f",
             self.family,
             idle_seconds,
         )
         self._shutdown_process(force=False)
+        return True
+
+    async def _recycle_if_hot_idle(self, timeout_seconds: int) -> None:
+        if not supports_process_cpu_sampling():
+            return
+        if self._process is None or self._session_process_pid is None:
+            self._reset_cpu_watch()
+            return
+        if self._last_used_monotonic is None:
+            self._reset_cpu_watch()
+            return
+        idle_seconds = time.monotonic() - self._last_used_monotonic
+        if idle_seconds < HOT_IDLE_MIN_IDLE_SECONDS:
+            self._reset_cpu_watch()
+            return
+
+        current_sample, cpu_percent = sample_process_cpu_percent(
+            self._session_process_pid,
+            self._cpu_sample,
+        )
+        self._cpu_sample = current_sample
+        if current_sample is None:
+            self.logger.info(
+                "warm_worker_recycled_missing_process family=%s session_pid=%s",
+                self.family,
+                self._session_process_pid,
+            )
+            self._shutdown_process(force=True)
+            return
+        if cpu_percent is None:
+            return
+        if cpu_percent < HOT_IDLE_CPU_PERCENT:
+            self._hot_idle_sample_count = 0
+            return
+
+        self._hot_idle_sample_count += 1
+        self.logger.warning(
+            "warm_worker_hot_idle_detected family=%s worker_name=%s session_pid=%s idle_seconds=%.2f cpu_percent=%.2f sample_count=%s",
+            self.family,
+            self.worker_name,
+            self._session_process_pid,
+            idle_seconds,
+            cpu_percent,
+            self._hot_idle_sample_count,
+        )
+        if self._hot_idle_sample_count < HOT_IDLE_REQUIRED_SAMPLES:
+            return
+
+        self.logger.warning(
+            "warm_worker_restarting_hot_idle family=%s worker_name=%s session_pid=%s",
+            self.family,
+            self.worker_name,
+            self._session_process_pid,
+        )
+        self._shutdown_process(force=True)
+        try:
+            self._ensure_process()
+            response = await asyncio.to_thread(
+                self._send_prewarm_request,
+                timeout_seconds,
+            )
+        except Exception:
+            self._shutdown_process(force=True)
+            raise
+        self._mark_session_alive(response["processPid"])
+
+    def _mark_session_alive(self, process_pid: int | None) -> None:
+        self._last_used_monotonic = time.monotonic()
+        self._session_process_pid = process_pid
+        self._cpu_sample = None
+        self._hot_idle_sample_count = 0
+
+    def _reset_cpu_watch(self) -> None:
+        self._cpu_sample = None
+        self._hot_idle_sample_count = 0
 
     def _shutdown_process(self, force: bool) -> None:
         conn = self._parent_conn
@@ -268,6 +368,9 @@ class FamilyWorker:
         self._parent_conn = None
         self._process = None
         self._last_used_monotonic = None
+        self._session_process_pid = None
+        self._cpu_sample = None
+        self._hot_idle_sample_count = 0
 
         if conn is not None:
             if not force:
@@ -334,6 +437,10 @@ class FamilyWorkerPool:
         for worker in self._workers:
             await worker.prewarm(timeout_seconds)
 
+    async def run_maintenance(self, timeout_seconds: int) -> None:
+        for worker in self._workers:
+            await worker.run_maintenance(timeout_seconds)
+
     def close(self) -> None:
         for worker in self._workers:
             worker.close()
@@ -342,8 +449,11 @@ class FamilyWorkerPool:
 class WarmSessionManager:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self.logger = get_logger(__name__)
         ctx = multiprocessing.get_context("spawn")
         startup_lock = ctx.Lock()
+        self._janitor_stop_event = asyncio.Event()
+        self._janitor_task: asyncio.Task[None] | None = None
         self._pools = {
             FAMILY_WRITER: FamilyWorkerPool(
                 FAMILY_WRITER,
@@ -381,9 +491,52 @@ class WarmSessionManager:
         for family in PREWARM_FAMILY_ORDER:
             await self._pools[family].prewarm_all(timeout_seconds)
 
+    async def start(self) -> None:
+        if self._janitor_task is not None:
+            return
+        self._janitor_stop_event.clear()
+        self._janitor_task = asyncio.create_task(
+            self._run_janitor_loop(),
+            name="warm-session-janitor",
+        )
+
+    async def aclose(self) -> None:
+        task = self._janitor_task
+        if task is not None:
+            self._janitor_stop_event.set()
+            await task
+            self._janitor_task = None
+        self.close()
+
     def close(self) -> None:
         for pool in self._pools.values():
             pool.close()
+
+    async def _run_janitor_loop(self) -> None:
+        self.logger.info(
+            "warm_session_janitor_started interval_seconds=%s",
+            JANITOR_INTERVAL_SECONDS,
+        )
+        try:
+            while not self._janitor_stop_event.is_set():
+                try:
+                    await self._run_maintenance_cycle()
+                except Exception:
+                    self.logger.exception("warm_session_janitor_cycle_failed")
+
+                try:
+                    await asyncio.wait_for(
+                        self._janitor_stop_event.wait(),
+                        timeout=JANITOR_INTERVAL_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    continue
+        finally:
+            self.logger.info("warm_session_janitor_stopped")
+
+    async def _run_maintenance_cycle(self) -> None:
+        for pool in self._pools.values():
+            await pool.run_maintenance(self.settings.conversion_timeout_seconds)
 
 
 def get_warm_session_manager(settings: Settings) -> WarmSessionManager:
@@ -393,11 +546,11 @@ def get_warm_session_manager(settings: Settings) -> WarmSessionManager:
     return _MANAGER
 
 
-def close_warm_session_manager() -> None:
+async def close_warm_session_manager() -> None:
     global _MANAGER
     if _MANAGER is None:
         return
-    _MANAGER.close()
+    await _MANAGER.aclose()
     _MANAGER = None
 
 
@@ -506,7 +659,7 @@ def _handle_prewarm_command(
                 family,
                 worker_name,
             )
-        connection.send({"ok": True})
+        connection.send({"ok": True, "processPid": session.process_pid})
         return session, jobs_completed
     except AppError as exc:
         logger.exception("warm_worker_prewarm_failed family=%s", family)

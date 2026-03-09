@@ -48,10 +48,11 @@ async def lifespan(_: FastAPI):
         settings.jobs_dir, settings.cleanup_max_age_seconds
     )
     logger.info("startup_cleanup deleted_jobs=%s", deleted_count)
+    await warm_session_manager.start()
     try:
         yield
     finally:
-        close_warm_session_manager()
+        await close_warm_session_manager()
 
 
 def _patch_binary_schema(node: Any) -> None:

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 import os
 import subprocess
+import time
 
 
 def resolve_auto_writer_worker_count(cpu_core_count: int) -> int:
@@ -21,6 +23,37 @@ def detect_cpu_core_count(fallback: int) -> int:
         or os.cpu_count()
         or fallback
     )
+
+
+def supports_process_cpu_sampling() -> bool:
+    return Path("/proc").exists()
+
+
+@dataclass(frozen=True)
+class ProcessCpuSample:
+    captured_monotonic: float
+    total_cpu_seconds: float
+
+
+def sample_process_cpu_percent(
+    pid: int,
+    previous: ProcessCpuSample | None,
+) -> tuple[ProcessCpuSample | None, float | None]:
+    current = _read_process_cpu_sample(pid)
+    if current is None:
+        return None, None
+    if previous is None:
+        return current, None
+
+    elapsed_seconds = current.captured_monotonic - previous.captured_monotonic
+    if elapsed_seconds <= 0:
+        return current, None
+
+    cpu_seconds = current.total_cpu_seconds - previous.total_cpu_seconds
+    if cpu_seconds < 0:
+        return current, None
+
+    return current, (cpu_seconds / elapsed_seconds) * 100.0
 
 
 def _parse_positive_int(raw_value: str) -> int | None:
@@ -100,3 +133,35 @@ def _detect_cpu_cores_from_sysctl() -> int | None:
         return None
 
     return _parse_positive_int(result.stdout)
+
+
+def _read_process_cpu_sample(pid: int) -> ProcessCpuSample | None:
+    stat_path = Path(f"/proc/{pid}/stat")
+    if not stat_path.exists():
+        return None
+
+    try:
+        stat_content = stat_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+
+    closing_paren_index = stat_content.rfind(")")
+    if closing_paren_index < 0:
+        return None
+
+    fields = stat_content[closing_paren_index + 2 :].split()
+    if len(fields) < 15:
+        return None
+
+    try:
+        utime_ticks = int(fields[11])
+        stime_ticks = int(fields[12])
+    except ValueError:
+        return None
+
+    clock_ticks_per_second = os.sysconf("SC_CLK_TCK")
+    total_cpu_seconds = (utime_ticks + stime_ticks) / clock_ticks_per_second
+    return ProcessCpuSample(
+        captured_monotonic=time.monotonic(),
+        total_cpu_seconds=total_cpu_seconds,
+    )
