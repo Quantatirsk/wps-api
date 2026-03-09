@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from app.adapters.base import BaseWpsAdapter, ConversionDetails
+from app.adapters.base import BaseWpsAdapter, ConversionDetails, WpsSession
 from app.utils.errors import (
     WpsConversionError,
     WpsOpenDocumentError,
@@ -12,27 +12,28 @@ from app.utils.errors import (
 
 
 class PresentationAdapter(BaseWpsAdapter):
-    def convert_to_pdf(self, input_path: Path, output_path: Path) -> ConversionDetails:
-        QtApp, S_OK, create_wpp_rpc_instance, wppapi = self._load_dependencies()
+    def start_session(self) -> WpsSession:
+        QtApp, S_OK, create_wpp_rpc_instance, _ = self._load_dependencies()
+        return self._start_session(
+            qt_app_factory=QtApp,
+            success_code=S_OK,
+            create_rpc_instance=create_wpp_rpc_instance,
+            get_application=lambda rpc: rpc.getWppApplication(),
+            create_rpc_instance_name="createWppRpcInstance",
+            get_application_name="getWppApplication",
+        )
 
-        _qt_app = QtApp([])
-        hr, rpc = create_wpp_rpc_instance()
-        if hr != S_OK:
-            raise WpsStartupError(f"createWppRpcInstance failed: {self._format_hresult(hr)}")
-
-        process_pid = self._get_process_pid(rpc, S_OK)
-
-        hr, app = rpc.getWppApplication()
-        if hr != S_OK:
-            raise WpsStartupError(f"getWppApplication failed: {self._format_hresult(hr)}")
+    def convert_with_session(
+        self,
+        session: WpsSession,
+        input_path: Path,
+        output_path: Path,
+    ) -> ConversionDetails:
+        _, S_OK, _, wppapi = self._load_dependencies()
 
         presentation = None
         try:
-            try:
-                app.Visible = False
-            except Exception:
-                pass
-            hr, presentation = app.Presentations.Open(
+            hr, presentation = session.app.Presentations.Open(
                 str(input_path),
                 wppapi.msoTrue,
                 wppapi.msoFalse,
@@ -66,16 +67,12 @@ class PresentationAdapter(BaseWpsAdapter):
                 )
         finally:
             if presentation is not None:
-                try:
-                    presentation.Close()
-                except Exception:
-                    pass
-            try:
-                app.Quit()
-            except Exception:
-                pass
+                self._close_safely(presentation.Close)
 
-        return ConversionDetails(process_pid=process_pid)
+        return ConversionDetails(process_pid=session.process_pid)
+
+    def stop_session(self, session: WpsSession) -> None:
+        self._close_safely(session.app.Quit)
 
     def _load_dependencies(self) -> tuple[Any, int, Any, Any]:
         try:

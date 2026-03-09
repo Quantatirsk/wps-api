@@ -8,27 +8,6 @@ services:
       - "${WPS_API_PORT:-18000}:8000"
     environment:
       WPS_WORKSPACE_ROOT: /workspace
-      WPS_BATCH_WORKER_URL: http://wps-worker:8000
-      WPS_BATCH_WORKER_CONCURRENCY: "${WPS_WORKER_COUNT:-8}"
-      WPS_DISPATCHER_REQUEST_TIMEOUT_SECONDS: "${WPS_DISPATCHER_REQUEST_TIMEOUT_SECONDS:-180}"
-      WPS_BATCH_MAX_FILES: "${WPS_BATCH_MAX_FILES:-10}"
+      WPS_WORKER_COUNT: "${WPS_WORKER_COUNT:-auto}"
+      WPS_BATCH_MAX_FILES: "${WPS_BATCH_MAX_FILES:-12}"
     command: ["python3", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
-    depends_on:
-      - wps-worker
-    networks:
-      - wps-net
-
-  wps-worker:
-    image: ${WPS_IMAGE:-quantatrisk/wps-api:latest}
-    restart: unless-stopped
-    environment:
-      WPS_WORKSPACE_ROOT: /workspace
-      WPS_BATCH_MAX_FILES: "${WPS_BATCH_MAX_FILES:-10}"
-    expose:
-      - "8000"
-    networks:
-      - wps-net
-
-networks:
-  wps-net:
-    driver: bridge

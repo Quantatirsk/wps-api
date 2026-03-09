@@ -14,6 +14,10 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from app.api.convert_routes import router as convert_router
 from app.api.health_routes import router as health_router
 from app.config import get_settings
+from app.runtime.warm_session_manager import (
+    close_warm_session_manager,
+    get_warm_session_manager,
+)
 from app.utils.errors import AppError
 from app.utils.files import cleanup_expired_jobs, ensure_runtime_directories
 from app.utils.logging import configure_logging, get_logger
@@ -33,11 +37,21 @@ async def lifespan(_: FastAPI):
     configure_logging()
     settings = get_settings()
     ensure_runtime_directories(settings)
+    warm_session_manager = get_warm_session_manager(settings)
+    if settings.warm_session_prewarm_enabled:
+        logger.info("warm_session_prewarm_started")
+        await warm_session_manager.prewarm_all(settings.conversion_timeout_seconds)
+        logger.info("warm_session_prewarm_completed")
+    else:
+        logger.info("warm_session_prewarm_skipped reason=disabled")
     deleted_count = cleanup_expired_jobs(
         settings.jobs_dir, settings.cleanup_max_age_seconds
     )
     logger.info("startup_cleanup deleted_jobs=%s", deleted_count)
-    yield
+    try:
+        yield
+    finally:
+        close_warm_session_manager()
 
 
 def _patch_binary_schema(node: Any) -> None:

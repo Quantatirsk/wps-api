@@ -1,32 +1,51 @@
 # WPS API
 
-`WPS API` 是一个基于 `WPS Office for Linux + pywpsrpc + FastAPI` 的无头 PDF 转换服务。
+`wps-api` is a headless PDF conversion service built on top of:
 
-它专注做一件事：
+- `WPS Office for Linux`
+- `pywpsrpc`
+- `FastAPI`
 
-- 接收 Office 文档
-- 调用 WPS 导出 PDF
-- 返回单个 PDF 或批量 ZIP
+It is intentionally narrow in scope. The service accepts supported Office
+documents, asks WPS to export them as PDF, and returns either a single PDF or a
+ZIP archive for batch requests.
 
-## 功能
+For Chinese documentation, see [中文文档](docs/README.zh-CN.md).
 
-当前支持这些能力：
+## Status
 
-- `doc` / `docx` 转 PDF
-- `ppt` / `pptx` 转 PDF
-- `xls` / `xlsx` 转 PDF
-- 单文件转换
-- 多文件批量转换
-- 批量分发到多个 worker 提高吞吐
-- 健康检查与运行环境检查
+The current deployment model is a single container with a local warm worker
+pool:
+
+- one FastAPI service process
+- one local `spreadsheet` warm worker
+- one local `presentation` warm worker
+- multiple local `writer` warm workers for `doc` and `docx`
+
+Workers run inside the same container and communicate through local process IPC.
+The project no longer uses the old multi-container HTTP dispatch design.
+
+## Features
+
+- Convert `doc` and `docx` to PDF
+- Convert `ppt` and `pptx` to PDF
+- Convert `xls` and `xlsx` to PDF
+- Convert a single file and stream a PDF response
+- Convert multiple files and stream a ZIP response
+- Reuse warm WPS application sessions to reduce cold-start overhead
+- Prewarm writer, spreadsheet, and presentation sessions on startup
+- Expose liveness and readiness endpoints
+- Clean expired job directories on startup
 
 ## API
 
+The API prefix is `/api/v1`.
+
 ### `GET /api/v1/healthz`
 
-进程存活检查。
+Simple process liveness probe.
 
-响应示例：
+Example response:
 
 ```json
 {"ok": true}
@@ -34,88 +53,201 @@
 
 ### `GET /api/v1/readyz`
 
-运行环境检查。
+Runtime readiness probe. The endpoint verifies:
 
-当前会检查：
+- the jobs directory is writable
+- the runtime directory is writable
+- `DISPLAY` is configured
+- `XDG_RUNTIME_DIR` is configured
+- `pywpsrpc` can be imported
 
-- `jobs` 目录可写
-- `runtime` 目录可写
-- `DISPLAY` 已配置
-- `XDG_RUNTIME_DIR` 已配置
-- `pywpsrpc` 可导入
+Example response:
+
+```json
+{
+  "ok": true,
+  "checks": {
+    "jobsDirWritable": true,
+    "runtimeDirWritable": true,
+    "displayConfigured": true,
+    "xdgRuntimeDirConfigured": true,
+    "pywpsrpcInstalled": true
+  }
+}
+```
 
 ### `POST /api/v1/convert-to-pdf`
 
-上传单个文件并返回 PDF。
+Upload one file as multipart form data with the field name `file`.
+
+Example:
 
 ```bash
 curl -X POST \
   -F "file=@./example.docx" \
-  http://127.0.0.1:8000/api/v1/convert-to-pdf \
+  http://127.0.0.1:18000/api/v1/convert-to-pdf \
   --output output.pdf
 ```
 
 ### `POST /api/v1/convert-to-pdf/batch`
 
-上传多个文件并返回 ZIP。
+Upload multiple files as multipart form data with the field name `files`.
+Each uploaded file is converted to PDF. The response is a ZIP archive containing
+all generated PDFs and a manifest file.
+
+Example:
 
 ```bash
 curl -X POST \
   -F "files=@./a.docx" \
   -F "files=@./b.pptx" \
   -F "files=@./c.xlsx" \
-  http://127.0.0.1:8000/api/v1/convert-to-pdf/batch \
+  http://127.0.0.1:18000/api/v1/convert-to-pdf/batch \
   --output outputs.zip
 ```
 
-## 支持格式
+### Interactive API Docs
+
+Swagger UI is available at `/docs`.
+
+## Supported Formats
 
 - Writer: `.doc`, `.docx`
 - Presentation: `.ppt`, `.pptx`
 - Spreadsheet: `.xls`, `.xlsx`
 
-## 目录结构
+## Architecture
 
-```text
-.
-├── app/
-│   ├── adapters/
-│   ├── api/
-│   ├── services/
-│   └── utils/
-├── docker/
-│   ├── conf/
-│   ├── Dockerfile
-│   ├── docker-compose.yml
-│   └── *.sh
-├── scripts/
-├── requirements.txt
-└── README.md
-```
+### Request Flow
 
-## 运行方式
+The request path is:
 
-### 构建镜像
+1. FastAPI receives a multipart upload.
+2. The file is persisted under the workspace jobs directory.
+3. `ConversionService` routes the file by document family.
+4. `WarmSessionManager` dispatches the request to a local family worker.
+5. The worker reuses or starts a warm WPS application session.
+6. WPS opens the document and exports it as PDF.
+7. The API streams back the PDF or ZIP response.
+8. Temporary job files are cleaned up by background tasks.
 
-最简单的方式：
+### Warm Worker Model
+
+- `writer` requests are distributed across a local worker pool.
+- `spreadsheet` requests use one local warm worker.
+- `presentation` requests use one local warm worker.
+- Each worker processes its own document family serially.
+- Concurrency comes from multiple local processes, not from multiple requests
+  sharing one WPS application at the same time.
+
+### Startup Behavior
+
+On application startup the service:
+
+1. configures logging
+2. ensures workspace directories exist
+3. creates the warm session manager
+4. optionally prewarms all local workers
+5. deletes expired job directories
+
+If prewarm is enabled, the service becomes externally useful only after the
+prewarm sequence completes.
+
+## Worker Count Rules
+
+`WPS_WORKER_COUNT` controls the number of local `writer` workers.
+
+### Auto Mode
+
+If `WPS_WORKER_COUNT` is empty or set to `auto`, the service detects physical
+CPU core count and applies this formula:
+
+- fewer than `8` cores: use the core count
+- `8..16` cores: use `core_count - 2`
+- more than `16` cores: use `16`
+
+### Manual Mode
+
+If `WPS_WORKER_COUNT` is an explicit integer, the current implementation clamps
+it into `1..32`.
+
+That means:
+
+- auto mode is capped by the formula above
+- manual mode still allows values above `16`, up to the current hard clamp of
+  `32`
+
+## Configuration
+
+### Runtime Environment Variables
+
+- `WPS_WORKSPACE_ROOT`
+  - default: `/workspace`
+  - root directory for job files and runtime files
+- `WPS_CONVERSION_TIMEOUT_SECONDS`
+  - default: `120`
+  - timeout for one conversion request inside a local worker
+- `WPS_CLEANUP_MAX_AGE_SECONDS`
+  - default: `86400`
+  - startup cleanup threshold for stale job directories
+- `WPS_MAX_UPLOAD_SIZE_BYTES`
+  - default: `52428800`
+  - per-file upload size limit
+- `WPS_BATCH_MAX_FILES`
+  - default: `12`
+  - maximum number of files accepted by the batch endpoint
+- `WPS_WORKER_COUNT`
+  - default: `auto`
+  - local writer worker count, resolved by the rules described above
+- `WPS_WARM_SESSION_IDLE_TTL_SECONDS`
+  - default: `600`
+  - recycle a local warm session after this much idle time
+- `WPS_WARM_SESSION_MAX_JOBS`
+  - default: `100`
+  - recycle a local warm session after this many completed jobs
+- `WPS_WARM_SESSION_PREWARM_ENABLED`
+  - default: `true`
+  - prewarm local workers during application startup
+
+### Compose and Startup Variables
+
+- `WPS_IMAGE`
+  - default: `quantatrisk/wps-api:latest`
+  - image used by `scripts/compose_up.sh`
+- `WPS_API_PORT`
+  - default: `18000`
+  - host port published by `docker/docker-compose.yml`
+
+## Build and Run
+
+### Preferred Startup Path
+
+The supported startup entrypoint is:
 
 ```bash
-docker build -f docker/Dockerfile -t quantatrisk/wps-api:local .
+./scripts/build_image.sh
+./scripts/compose_up.sh
 ```
 
-也可以使用交互式脚本：
+Do not run `docker compose up` directly. The wrapper script is the supported
+entrypoint because it resolves worker count and validates image availability
+before starting the service.
+
+### Build the Image
+
+Interactive build:
 
 ```bash
 ./scripts/build_image.sh
 ```
 
-`docker/Dockerfile` 会：
+Non-interactive build:
 
-- 下载 WPS Linux 安装包
-- 下载 `https://software.cdn.vect.one/Fonts.zip`
-- 把中文字体打进镜像
+```bash
+docker build -f docker/Dockerfile -t quantatrisk/wps-api:local .
+```
 
-如果你要替换下载源，可以覆盖下面两个构建参数：
+Optional build arguments:
 
 ```bash
 docker build \
@@ -125,97 +257,100 @@ docker build \
   -t quantatrisk/wps-api:local .
 ```
 
-### 运行单容器
+### Start with Docker Compose
 
 ```bash
-docker run --rm \
-  -p 8000:8000 \
-  -v $(pwd)/workspace:/workspace \
-  quantatrisk/wps-api:local
+./scripts/compose_up.sh
 ```
 
-### 启动集群
-
-标准启动方式只有一种：
+Override selected values:
 
 ```bash
-./scripts/build_image.sh
-WPS_WORKER_COUNT=8 ./scripts/compose_up.sh
+WPS_IMAGE=quantatrisk/wps-api:local \
+WPS_API_PORT=18000 \
+WPS_WORKER_COUNT=auto \
+./scripts/compose_up.sh
 ```
 
-不要直接执行 `docker compose up`。
-
-因为 `docker/docker-compose.yml` 只定义 service，不会按 `WPS_WORKER_COUNT` 自动扩容 worker；直接执行时通常只会启动：
-
-- 1 个 `wps-api`
-- 1 个 `wps-worker`
-
-### 默认行为
-
-- `wps-api`: 对外 dispatcher，默认暴露到 `18000`
-- `wps-worker`: 可横向扩容的实际转换节点；dispatcher 直接通过 Docker service 名称访问它
-
-### 常用环境变量
-
-- `WPS_WORKER_COUNT`: worker 数量，默认 `8`；compose 也会把它作为 dispatcher 的默认分发并发度
-- `WPS_API_PORT`: 对外端口，默认 `18000`
-- `WPS_DISPATCHER_REQUEST_TIMEOUT_SECONDS`: dispatcher 到 worker 超时，默认 `180`
-- `WPS_BATCH_MAX_FILES`: batch 最大文件数，默认 `10`
-- `WPS_IMAGE`: compose 使用的镜像名，默认 `quantatrisk/wps-api:latest`
-
-停止并清理：
+Stop and clean up:
 
 ```bash
 docker compose -f docker/docker-compose.yml down --remove-orphans
 ```
 
-## 远程部署
+### Run Locally
 
-远程服务器不需要额外的部署脚本；只要目标机上已经有该仓库工作树，并且镜像已构建，就直接使用 `scripts/compose_up.sh` 启动。
-
-标准步骤：
-
-```bash
-git clone https://github.com/Quantatirsk/wps-api.git
-cd wps-api
-./scripts/build_image.sh
-WPS_WORKER_COUNT=8 ./scripts/compose_up.sh
-```
-
-约束：
-
-- 标准启动入口仍然只有 `scripts/compose_up.sh`
-- 不再保留仓库内的远程拉取部署脚本
-- 如果镜像不存在，`compose_up.sh` 会直接失败并提示先构建镜像
-
-## 本地调试
-
-如果本机已经具备完整 Linux WPS 运行时，可以直接启动 API：
+If the host already has a usable Linux WPS runtime, you can run the API process
+without Docker:
 
 ```bash
 ./scripts/run_local_api.sh
 ```
 
-快速烟测：
+The local launcher sets:
+
+- `WPS_WORKSPACE_ROOT`
+- `DISPLAY`
+- `QT_QPA_PLATFORM`
+- `XDG_RUNTIME_DIR`
+
+## Deployment Notes
+
+### Remote Host
+
+The expected remote deployment flow is:
 
 ```bash
-./scripts/smoke_test_api.sh
-./scripts/smoke_test_api.sh tests/files/经责审计报告示例.docx
+git clone https://github.com/Quantatirsk/wps-api.git
+cd wps-api
+./scripts/build_image.sh
+./scripts/compose_up.sh
 ```
 
-## 环境变量
+There is no separate in-repo remote deployment script anymore. The repository
+expects the target host to have:
 
-- `WPS_WORKSPACE_ROOT`: 工作目录根路径，默认 `/workspace`
-- `WPS_CONVERSION_TIMEOUT_SECONDS`: 转换超时秒数，默认 `120`
-- `WPS_CLEANUP_MAX_AGE_SECONDS`: 历史任务清理阈值，默认 `86400`
-- `WPS_MAX_UPLOAD_SIZE_BYTES`: 上传大小上限，默认 `52428800`
-- `WPS_BATCH_MAX_FILES`: 批量文件数上限，默认 `10`
-- `WPS_BATCH_WORKER_URL`: worker 基础地址；配置后批量接口会启用远程分发
-- `WPS_BATCH_WORKER_CONCURRENCY`: dispatcher 发往 worker 的并发度，默认 `1`
-- `WPS_DISPATCHER_REQUEST_TIMEOUT_SECONDS`: dispatcher 调 worker 的超时秒数，默认 `180`
+- Docker
+- the repository checkout
+- a locally built image
 
-## 边界
+If the image does not exist, `scripts/compose_up.sh` fails fast.
 
-- 单实例内同文档族串行执行，避免 WPS 自动化互相干扰
-- 批量接口是受控并发，不保证部分成功返回
-- 当前没有鉴权、队列、重试中心和任务持久化
+## Operational Notes
+
+- Prewarm happens during startup.
+- Batch requests are concurrent but not partially successful; one failed item
+  causes the whole batch request to fail.
+- Temporary files are stored under the workspace jobs directory.
+- Single worker processes handle one document family serially.
+- The service does not include authentication, a persistent queue, or retry
+  orchestration.
+
+## Project Layout
+
+```text
+.
+├── app/
+│   ├── adapters/        # WPS-family-specific automation adapters
+│   ├── api/             # FastAPI routes
+│   ├── runtime/         # Warm worker pool and worker process management
+│   ├── services/        # Conversion orchestration
+│   └── utils/           # Filesystem, logging, CPU detection, and errors
+├── docker/
+│   ├── conf/            # WPS and X11 config files
+│   ├── Dockerfile
+│   ├── docker-compose.yml
+│   └── entrypoint.sh
+├── docs/
+│   └── README.zh-CN.md
+├── scripts/
+├── tests/
+└── README.md
+```
+
+## Development Notes
+
+- The application code lives outside the vendored `pywpsrpc/` directory.
+- The repository currently includes sample Office files under `tests/files/`.
+- The service is optimized for batch `docx -> pdf` throughput, with smaller
+  amounts of spreadsheet and presentation traffic.
