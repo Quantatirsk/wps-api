@@ -238,21 +238,53 @@ Interactive build:
 ./scripts/build_image.sh
 ```
 
+Choose a target platform explicitly:
+
+```bash
+./scripts/build_image.sh --platform arm64
+./scripts/build_image.sh --platform amd64
+./scripts/build_image.sh --platform all --image-tag 2026.03.10 --push
+```
+
 Non-interactive build:
 
 ```bash
-docker build -f docker/Dockerfile -t quantatrisk/wps-api:local .
+WPS_BUILD_YES=true ./scripts/build_image.sh --platform arm64 --image-tag arm64
 ```
 
-Optional build arguments:
+Build and push to Docker Hub:
 
 ```bash
-docker build \
-  -f docker/Dockerfile \
-  --build-arg WPS_DEB_URL_BASE=https://your-mirror.example.com/wps-office.deb \
-  --build-arg FONTS_ZIP_URL=https://your-cdn.example.com/Fonts.zip \
-  -t quantatrisk/wps-api:local .
+WPS_BUILD_YES=true ./scripts/build_image.sh --platform arm64 --image-tag arm64 --push
+WPS_BUILD_YES=true ./scripts/build_image.sh --platform all --image-tag 2026.03.10 --push
 ```
+
+Advanced resource overrides:
+
+```bash
+WPS_DEB_URL_BASE=https://your-mirror.example.com/wps-office.deb \
+PYWPSRPC_WHEEL_URL=https://your-artifacts.example.com/pywpsrpc.whl \
+FONTS_ZIP_URL=https://your-cdn.example.com/Fonts.zip \
+WPS_BUILD_YES=true \
+./scripts/build_image.sh --platform arm64 --image-tag arm64
+```
+
+### ARM64 Notes
+
+- The build script now reduces platform choice to `host`, `amd64`, `arm64`, or `all`.
+- `amd64` uses the default x86 WPS package and the default PyPI `pywpsrpc` path.
+- `arm64` uses the default ARM WPS package and the prebuilt ARM `pywpsrpc` wheel.
+- `arm64` automatically adds a local `latest` tag when the primary tag is not `latest`.
+- If `--push` is enabled for `arm64`, both the primary tag and `latest` are pushed.
+- The current ARM wheel requires Python `3.10`, which matches the Ubuntu 22.04 base image.
+- Advanced resource URLs can still be overridden through environment variables.
+
+### Multi-Arch Notes
+
+- `--platform all` switches the script to `docker buildx build`.
+- The script publishes a real multi-arch manifest for `linux/amd64,linux/arm64`.
+- Multi-arch builds require registry push, so `--platform all` implies push semantics.
+- If the primary tag is not `latest`, the script also publishes `latest` as the same multi-arch manifest.
 
 ### Start with Docker Compose
 
@@ -260,10 +292,17 @@ docker build \
 ./scripts/compose_up.sh
 ```
 
+Consume a published tag:
+
+```bash
+WPS_IMAGE_TAG=2026.03.10 ./scripts/compose_up.sh
+```
+
 Override selected values:
 
 ```bash
 WPS_IMAGE=quantatrisk/wps-api:local \
+WPS_IMAGE_PULL=false \
 WPS_API_PORT=18000 \
 WPS_WORKER_COUNT=auto \
 ./scripts/compose_up.sh
@@ -300,18 +339,25 @@ The expected remote deployment flow is:
 ```bash
 git clone https://github.com/Quantatirsk/wps-api.git
 cd wps-api
-./scripts/build_image.sh
+WPS_IMAGE_TAG=2026.03.10 ./scripts/compose_up.sh
+```
+
+For a new release from a development machine:
+
+```bash
+WPS_BUILD_YES=true ./scripts/build_image.sh --platform all --image-tag 2026.03.10 --push
+```
+
+If you prefer to follow the moving multi-arch tag:
+
+```bash
 ./scripts/compose_up.sh
 ```
 
 There is no separate in-repo remote deployment script anymore. The repository
-expects the target host to have:
-
-- Docker
-- the repository checkout
-- a locally built image
-
-If the image does not exist, `scripts/compose_up.sh` fails fast.
+expects the target host to have Docker and the repository checkout. The compose
+wrapper now pulls the requested image automatically when it is not present
+locally.
 
 ## Operational Notes
 

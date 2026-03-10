@@ -10,8 +10,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LIBGL_ALWAYS_SOFTWARE=1 \
     WPS_BATCH_MAX_FILES=10
 
-ARG WPS_DEB_URL_BASE="https://wps-linux-personal.wpscdn.cn/wps/download/ep/Linux2023/24722/wps-office_12.1.2.24722.AK.preread.sw_612408_amd64.deb"
-ARG WPS_DOWNLOAD_KEY="7f8faaaa468174dc1c9cd62e5f218a5b"
+ARG WPS_DEB_URL_BASE=""
+ARG WPS_DEB_URL_AMD64="https://wps-linux-personal.wpscdn.cn/wps/download/ep/Linux2023/24722/wps-office_12.1.2.24722.AK.preread.sw_612408_amd64.deb"
+ARG WPS_DEB_URL_ARM64="https://pubwps-wps365-obs.wpscdn.cn/download/Linux/24722/wps-office_12.1.2.24722.AK.preread.sw_612444_arm64.deb"
+ARG PYWPSRPC_WHEEL_URL=""
+ARG PYWPSRPC_WHEEL_URL_ARM64="https://raw.githubusercontent.com/kevinhonor/pywpsrpc/master/packages/aarch64/pywpsrpc-2.3.9-cp310-cp310-linux_aarch64.whl"
 ARG FONTS_ZIP_URL="https://software.cdn.vect.one/Fonts.zip"
 
 WORKDIR /app
@@ -66,13 +69,22 @@ RUN sed -i 's@//.*archive.ubuntu.com@//mirrors.ustc.edu.cn@g' /etc/apt/sources.l
     locale-gen zh_CN.UTF-8 && \
     rm -rf /var/lib/apt/lists/*
 
-RUN ln -sf /usr/lib/x86_64-linux-gnu/libtiff.so.6 /usr/lib/x86_64-linux-gnu/libtiff.so.5 && \
+RUN libtiff_dir="$(dirname "$(find /usr/lib -path '*/libtiff.so.6' | head -n 1)")" && \
+    if [ -n "${libtiff_dir}" ] && [ ! -e "${libtiff_dir}/libtiff.so.5" ]; then \
+        ln -sf "${libtiff_dir}/libtiff.so.6" "${libtiff_dir}/libtiff.so.5"; \
+    fi && \
     ldconfig
 
-RUN WPS_URI="$(python3 -c 'from urllib.parse import urlparse; import os; print(urlparse(os.environ["WPS_DEB_URL_BASE"]).path)')" && \
-    WPS_T="$(date +%s)" && \
-    WPS_K="$(printf '%s' "${WPS_DOWNLOAD_KEY}${WPS_URI}${WPS_T}" | md5sum | awk '{print $1}')" && \
-    wget -O /tmp/wps.deb "${WPS_DEB_URL_BASE}?t=${WPS_T}&k=${WPS_K}" && \
+RUN arch="$(dpkg --print-architecture)" && \
+    wps_deb_url="${WPS_DEB_URL_BASE}" && \
+    if [ -z "${wps_deb_url}" ]; then \
+        case "${arch}" in \
+            amd64) wps_deb_url="${WPS_DEB_URL_AMD64}" ;; \
+            arm64) wps_deb_url="${WPS_DEB_URL_ARM64}" ;; \
+            *) echo "Unsupported Debian architecture: ${arch}" >&2; exit 1 ;; \
+        esac; \
+    fi && \
+    wget -O /tmp/wps.deb "${wps_deb_url}" && \
     apt-get update && \
     apt-get install -y --no-install-recommends /tmp/wps.deb && \
     rm -f /tmp/wps.deb && \
@@ -86,7 +98,18 @@ RUN wget -O /tmp/Fonts.zip "${FONTS_ZIP_URL}" && \
     fc-cache -f
 
 COPY requirements.txt /app/requirements.txt
-RUN pip3 install -r /app/requirements.txt -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
+RUN grep -Ev '^pywpsrpc([[:space:]]|$)' /app/requirements.txt > /tmp/requirements.base.txt && \
+    pip3 install -r /tmp/requirements.base.txt -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple && \
+    arch="$(dpkg --print-architecture)" && \
+    pywpsrpc_source="${PYWPSRPC_WHEEL_URL}" && \
+    if [ -z "${pywpsrpc_source}" ] && [ "${arch}" = "arm64" ]; then \
+        pywpsrpc_source="${PYWPSRPC_WHEEL_URL_ARM64}"; \
+    fi && \
+    if [ -n "${pywpsrpc_source}" ]; then \
+        pip3 install "${pywpsrpc_source}" -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple; \
+    else \
+        pip3 install pywpsrpc -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple; \
+    fi
 
 RUN mkdir -p /root/.config/Kingsoft
 COPY docker/conf/Office.conf /root/.config/Kingsoft/Office.conf

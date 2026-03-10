@@ -290,21 +290,53 @@ Swagger UI 路径是 `/docs`。
 ./scripts/build_image.sh
 ```
 
+显式指定目标平台：
+
+```bash
+./scripts/build_image.sh --platform arm64
+./scripts/build_image.sh --platform amd64
+./scripts/build_image.sh --platform all --image-tag 2026.03.10 --push
+```
+
 非交互方式：
 
 ```bash
-docker build -f docker/Dockerfile -t quantatrisk/wps-api:local .
+WPS_BUILD_YES=true ./scripts/build_image.sh --platform arm64 --image-tag arm64
 ```
 
-可选构建参数：
+构建后推送到 Docker Hub：
 
 ```bash
-docker build \
-  -f docker/Dockerfile \
-  --build-arg WPS_DEB_URL_BASE=https://your-mirror.example.com/wps-office.deb \
-  --build-arg FONTS_ZIP_URL=https://your-cdn.example.com/Fonts.zip \
-  -t quantatrisk/wps-api:local .
+WPS_BUILD_YES=true ./scripts/build_image.sh --platform arm64 --image-tag arm64 --push
+WPS_BUILD_YES=true ./scripts/build_image.sh --platform all --image-tag 2026.03.10 --push
 ```
+
+高级资源覆盖：
+
+```bash
+WPS_DEB_URL_BASE=https://your-mirror.example.com/wps-office.deb \
+PYWPSRPC_WHEEL_URL=https://your-artifacts.example.com/pywpsrpc.whl \
+FONTS_ZIP_URL=https://your-cdn.example.com/Fonts.zip \
+WPS_BUILD_YES=true \
+./scripts/build_image.sh --platform arm64 --image-tag arm64
+```
+
+### ARM64 说明
+
+- 构建脚本现在把平台选择收敛为 `host`、`amd64`、`arm64`、`all` 四种。
+- `amd64` 自动使用默认的 x86 WPS 安装包和 PyPI `pywpsrpc`。
+- `arm64` 自动使用默认的 ARM WPS 安装包和 ARM `pywpsrpc` wheel。
+- `arm64` 在主标签不是 `latest` 时会自动额外打一个本地 `latest` 标签。
+- 如果对 `arm64` 启用 `--push`，脚本会同时推送主标签和 `latest`。
+- 当前 ARM wheel 依赖 Python `3.10`，与 Ubuntu 22.04 基础镜像匹配。
+- 如果你需要自定义资源地址，仍然可以通过环境变量覆盖。
+
+### Multi-Arch 说明
+
+- `--platform all` 会切换到 `docker buildx build`。
+- 脚本会发布真正的 `linux/amd64,linux/arm64` 多架构 manifest。
+- 多架构构建必须推送到镜像仓库，因此 `--platform all` 默认就是 push 语义。
+- 如果主标签不是 `latest`，脚本还会把 `latest` 一起发布成同一份多架构 manifest。
 
 ### Compose 启动
 
@@ -312,10 +344,17 @@ docker build \
 ./scripts/compose_up.sh
 ```
 
+消费已发布版本：
+
+```bash
+WPS_IMAGE_TAG=2026.03.10 ./scripts/compose_up.sh
+```
+
 指定参数示例：
 
 ```bash
 WPS_IMAGE=quantatrisk/wps-api:local \
+WPS_IMAGE_PULL=false \
 WPS_API_PORT=18000 \
 WPS_WORKER_COUNT=auto \
 ./scripts/compose_up.sh
@@ -349,7 +388,18 @@ docker compose -f docker/docker-compose.yml down --remove-orphans
 ```bash
 git clone https://github.com/Quantatirsk/wps-api.git
 cd wps-api
-./scripts/build_image.sh
+WPS_IMAGE_TAG=2026.03.10 ./scripts/compose_up.sh
+```
+
+如果你要在开发机发布一个新版本，推荐流程是：
+
+```bash
+WPS_BUILD_YES=true ./scripts/build_image.sh --platform all --image-tag 2026.03.10 --push
+```
+
+如果你希望直接跟随最新的多架构 `latest`：
+
+```bash
 ./scripts/compose_up.sh
 ```
 
@@ -357,9 +407,8 @@ cd wps-api
 
 - Docker
 - 仓库工作树
-- 已构建的镜像
 
-如果镜像不存在，`compose_up.sh` 会直接失败。
+如果本地没有目标镜像，`compose_up.sh` 会自动尝试从镜像仓库拉取。
 
 ## 运行边界
 
