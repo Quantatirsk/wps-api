@@ -11,8 +11,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     WPS_BATCH_MAX_FILES=10
 
 ARG WPS_DEB_URL_BASE=""
-ARG WPS_DEB_URL_AMD64="https://pubwps-wps365-obs.wpscdn.cn/download/Linux/24722/wps-office_12.1.2.24722.AK.preread.sw_612423_amd64.deb"
-ARG WPS_DEB_URL_ARM64="https://pubwps-wps365-obs.wpscdn.cn/download/Linux/24722/wps-office_12.1.2.24722.AK.preread.sw_612444_arm64.deb"
+ARG WPS_DEB_URL_AMD64="https://wdl1.cache.wps.cn/wps/download/ep/Linux2019/9719/wps-office_11.1.0.9719_amd64.deb"
+ARG WPS_DEB_URL_ARM64="https://wdl1.cache.wps.cn/wps/download/ep/Linux2019/9719/wps-office_11.1.0.9719_arm64.deb"
 ARG PYWPSRPC_WHEEL_URL=""
 ARG PYWPSRPC_WHEEL_URL_ARM64="https://raw.githubusercontent.com/kevinhonor/pywpsrpc/master/packages/aarch64/pywpsrpc-2.3.9-cp310-cp310-linux_aarch64.whl"
 ARG FONTS_ZIP_URL="https://software.cdn.vect.one/Fonts.zip"
