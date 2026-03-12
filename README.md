@@ -33,7 +33,7 @@ The project no longer uses the old multi-container HTTP dispatch design.
 - Convert a single file and stream a PDF response
 - Convert multiple files and stream a ZIP response
 - Reuse warm WPS application sessions to reduce cold-start overhead
-- Prewarm writer, spreadsheet, and presentation sessions on startup
+- Enable document families through `ENABLE_WORD`, `ENABLE_EXCEL`, and `ENABLE_PPT`
 - Expose liveness and readiness endpoints
 - Clean expired job directories on startup
 
@@ -60,6 +60,7 @@ Runtime readiness probe. The endpoint verifies:
 - `DISPLAY` is configured
 - `XDG_RUNTIME_DIR` is configured
 - `pywpsrpc` can be imported
+- document family flags are visible in the `families` field
 
 Example response:
 
@@ -72,6 +73,11 @@ Example response:
     "displayConfigured": true,
     "xdgRuntimeDirConfigured": true,
     "pywpsrpcInstalled": true
+  },
+  "families": {
+    "wordEnabled": true,
+    "excelEnabled": false,
+    "pptEnabled": false
   }
 }
 ```
@@ -112,9 +118,19 @@ Swagger UI is available at `/docs`.
 
 ## Supported Formats
 
+The code recognizes these families:
+
 - Writer: `.doc`, `.docx`
 - Presentation: `.ppt`, `.pptx`
 - Spreadsheet: `.xls`, `.xlsx`
+
+Whether a family is actually available at runtime depends on:
+
+- `ENABLE_WORD` for Writer
+- `ENABLE_EXCEL` for Spreadsheet
+- `ENABLE_PPT` for Presentation
+
+Default runtime behavior only enables Writer.
 
 ## Architecture
 
@@ -133,9 +149,9 @@ The request path is:
 
 ### Warm Worker Model
 
-- `writer` requests are distributed across a local worker pool.
-- `spreadsheet` requests use one local warm worker.
-- `presentation` requests use one local warm worker.
+- enabled `writer` requests are distributed across a local worker pool.
+- enabled `spreadsheet` requests use one local warm worker.
+- enabled `presentation` requests use one local warm worker.
 - Each worker processes its own document family serially.
 - Concurrency comes from multiple local processes, not from multiple requests
   sharing one WPS application at the same time.
@@ -147,7 +163,7 @@ On application startup the service:
 1. configures logging
 2. ensures workspace directories exist
 3. creates the warm session manager
-4. optionally prewarms all local workers
+4. optionally prewarms all enabled local workers
 5. deletes expired job directories
 
 If prewarm is enabled, the service becomes externally useful only after the
@@ -204,7 +220,16 @@ That means:
   - recycle a local warm session after this many completed jobs
 - `WPS_WARM_SESSION_PREWARM_ENABLED`
   - default: `true`
-  - prewarm local workers during application startup
+  - prewarm enabled local workers during application startup
+- `ENABLE_WORD`
+  - default: `true`
+  - enable Writer conversions and Writer warm workers
+- `ENABLE_EXCEL`
+  - default: `false`
+  - enable Spreadsheet conversions and Spreadsheet warm workers
+- `ENABLE_PPT`
+  - default: `false`
+  - enable Presentation conversions and Presentation warm workers
 
 ### Compose and Startup Variables
 

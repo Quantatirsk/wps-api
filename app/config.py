@@ -10,10 +10,26 @@ from app.utils.cpu import detect_cpu_core_count, resolve_auto_writer_worker_coun
 
 MIN_WRITER_WORKER_COUNT = 1
 MAX_WRITER_WORKER_COUNT = 32
+FAMILY_WRITER = "writer"
+FAMILY_SPREADSHEET = "spreadsheet"
+FAMILY_PRESENTATION = "presentation"
 
 
 def _clamp_writer_worker_count(value: int) -> int:
     return max(MIN_WRITER_WORKER_COUNT, min(MAX_WRITER_WORKER_COUNT, value))
+
+
+def _parse_bool_env(name: str, default: bool) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+
+    normalized_value = raw_value.strip().lower()
+    if normalized_value in {"1", "true", "yes", "on"}:
+        return True
+    if normalized_value in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean value")
 
 
 def resolve_writer_worker_count() -> int:
@@ -46,6 +62,17 @@ class Settings:
     writer_worker_count: int
     warm_session_max_jobs: int
     warm_session_prewarm_enabled: bool
+    enable_word: bool
+    enable_excel: bool
+    enable_ppt: bool
+
+    def is_family_enabled(self, family: str) -> bool:
+        family_flags = {
+            FAMILY_WRITER: self.enable_word,
+            FAMILY_SPREADSHEET: self.enable_excel,
+            FAMILY_PRESENTATION: self.enable_ppt,
+        }
+        return family_flags.get(family, False)
 
 
 @lru_cache(maxsize=1)
@@ -78,4 +105,7 @@ def get_settings() -> Settings:
             os.getenv("WPS_WARM_SESSION_PREWARM_ENABLED", "true").strip().lower()
             not in {"0", "false", "no", "off"}
         ),
+        enable_word=_parse_bool_env("ENABLE_WORD", default=True),
+        enable_excel=_parse_bool_env("ENABLE_EXCEL", default=False),
+        enable_ppt=_parse_bool_env("ENABLE_PPT", default=False),
     )

@@ -13,7 +13,12 @@ from app.adapters.base import BaseWpsAdapter
 from app.adapters.presentation_adapter import PresentationAdapter
 from app.adapters.spreadsheet_adapter import SpreadsheetAdapter
 from app.adapters.writer_adapter import WriterAdapter
-from app.config import Settings
+from app.config import (
+    FAMILY_PRESENTATION,
+    FAMILY_SPREADSHEET,
+    FAMILY_WRITER,
+    Settings,
+)
 from app.utils.cpu import (
     ProcessCpuSample,
     sample_process_cpu_percent,
@@ -28,10 +33,6 @@ from app.utils.errors import (
 )
 from app.utils.logging import get_logger
 
-
-FAMILY_WRITER = "writer"
-FAMILY_PRESENTATION = "presentation"
-FAMILY_SPREADSHEET = "spreadsheet"
 
 ERROR_TYPES: dict[str, type[AppError]] = {
     "WpsStartupError": WpsStartupError,
@@ -484,26 +485,29 @@ class WarmSessionManager:
         startup_lock = ctx.Lock()
         self._janitor_stop_event = asyncio.Event()
         self._janitor_task: asyncio.Task[None] | None = None
-        self._pools = {
-            FAMILY_WRITER: FamilyWorkerPool(
+        self._pools: dict[str, FamilyWorkerPool] = {}
+
+        if settings.enable_word:
+            self._pools[FAMILY_WRITER] = FamilyWorkerPool(
                 FAMILY_WRITER,
                 settings.writer_worker_count,
                 settings,
                 startup_lock,
-            ),
-            FAMILY_PRESENTATION: FamilyWorkerPool(
+            )
+        if settings.enable_ppt:
+            self._pools[FAMILY_PRESENTATION] = FamilyWorkerPool(
                 FAMILY_PRESENTATION,
                 1,
                 settings,
                 startup_lock,
-            ),
-            FAMILY_SPREADSHEET: FamilyWorkerPool(
+            )
+        if settings.enable_excel:
+            self._pools[FAMILY_SPREADSHEET] = FamilyWorkerPool(
                 FAMILY_SPREADSHEET,
                 1,
                 settings,
                 startup_lock,
-            ),
-        }
+            )
 
     async def convert(
         self,
@@ -519,7 +523,10 @@ class WarmSessionManager:
 
     async def prewarm_all(self, timeout_seconds: int) -> None:
         for family in PREWARM_FAMILY_ORDER:
-            await self._pools[family].prewarm_all(timeout_seconds)
+            pool = self._pools.get(family)
+            if pool is None:
+                continue
+            await pool.prewarm_all(timeout_seconds)
 
     async def start(self) -> None:
         if self._janitor_task is not None:

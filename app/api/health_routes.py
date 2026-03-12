@@ -29,6 +29,14 @@ async def readyz() -> JSONResponse:
         "xdgRuntimeDirConfigured": bool(os.getenv("XDG_RUNTIME_DIR")),
         "pywpsrpcInstalled": find_spec("pywpsrpc.common") is not None,
     }
+    families = {
+        "wordEnabled": settings.enable_word,
+        "excelEnabled": settings.enable_excel,
+        "pptEnabled": settings.enable_ppt,
+    }
     ready = all(checks.values())
     status_code = 200 if ready else 503
-    return JSONResponse(status_code=status_code, content={"ok": ready, "checks": checks})
+    return JSONResponse(
+        status_code=status_code,
+        content={"ok": ready, "checks": checks, "families": families},
+    )

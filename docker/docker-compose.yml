@@ -10,4 +10,7 @@ services:
       WPS_WORKSPACE_ROOT: /workspace
       WPS_WORKER_COUNT: "${WPS_WORKER_COUNT:-auto}"
       WPS_BATCH_MAX_FILES: "${WPS_BATCH_MAX_FILES:-12}"
+      ENABLE_WORD: "${ENABLE_WORD:-true}"
+      ENABLE_EXCEL: "${ENABLE_EXCEL:-false}"
+      ENABLE_PPT: "${ENABLE_PPT:-false}"
     command: ["python3", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -64,7 +64,7 @@ HTTP。
 - `xls` / `xlsx` 转 PDF
 - 单文件转换
 - 多文件批量转换
-- 启动时预热本地 WPS 会话
+- 通过 `ENABLE_WORD`、`ENABLE_EXCEL`、`ENABLE_PPT` 控制各 family 是否启用
 - 健康检查和运行环境检查
 
 当前不提供：
@@ -97,6 +97,7 @@ API 前缀固定为 `/api/v1`。
 - `DISPLAY` 已配置
 - `XDG_RUNTIME_DIR` 已配置
 - `pywpsrpc` 可导入
+- 当前 family 开关状态会出现在 `families` 字段
 
 示例响应：
 
@@ -109,6 +110,11 @@ API 前缀固定为 `/api/v1`。
     "displayConfigured": true,
     "xdgRuntimeDirConfigured": true,
     "pywpsrpcInstalled": true
+  },
+  "families": {
+    "wordEnabled": true,
+    "excelEnabled": false,
+    "pptEnabled": false
   }
 }
 ```
@@ -165,6 +171,31 @@ Swagger UI 路径是 `/docs`。
 
 ## worker 规则
 
+## 支持格式与 family 开关
+
+代码识别以下格式族：
+
+- `writer`
+  - `.doc`
+  - `.docx`
+- `presentation`
+  - `.ppt`
+  - `.pptx`
+- `spreadsheet`
+  - `.xls`
+  - `.xlsx`
+
+实际运行时是否可用由环境变量决定：
+
+- `ENABLE_WORD`
+  - 控制 `writer`
+- `ENABLE_EXCEL`
+  - 控制 `spreadsheet`
+- `ENABLE_PPT`
+  - 控制 `presentation`
+
+默认配置只启用 `writer`。
+
 ### Writer worker 数量
 
 `WPS_WORKER_COUNT` 控制本地 `writer` worker 数量。
@@ -192,14 +223,14 @@ Swagger UI 路径是 `/docs`。
 ### 各 family 的并发模型
 
 - `writer`
-  - 多个本地 worker
+  - 启用时使用多个本地 worker
   - 主要承载 `doc` / `docx`
   - 并发来自多个独立本地进程
 - `spreadsheet`
-  - 固定 1 个本地 worker
+  - 启用时固定 1 个本地 worker
   - 主要承载 `xls` / `xlsx`
 - `presentation`
-  - 固定 1 个本地 worker
+  - 启用时固定 1 个本地 worker
   - 主要承载 `ppt` / `pptx`
 
 单个 worker 内仍然是串行处理，避免同一个 WPS Application 内并发自动化带来
@@ -210,9 +241,7 @@ Swagger UI 路径是 `/docs`。
 启动阶段如果 `WPS_WARM_SESSION_PREWARM_ENABLED=true`，服务会：
 
 1. 创建 warm session manager
-2. 依次预热 `writer`
-3. 预热 `spreadsheet`
-4. 预热 `presentation`
+2. 依次预热已启用的 family
 5. 预热完成后再进入稳定对外服务状态
 
 会话复用的核心目的：
@@ -253,7 +282,16 @@ Swagger UI 路径是 `/docs`。
   - 单会话累计处理文件数达到阈值后回收
 - `WPS_WARM_SESSION_PREWARM_ENABLED`
   - 默认值：`true`
-  - 是否在启动时预热本地会话
+  - 是否在启动时预热已启用的本地会话
+- `ENABLE_WORD`
+  - 默认值：`true`
+  - 是否启用 `writer` 转换与 `writer` warm worker
+- `ENABLE_EXCEL`
+  - 默认值：`false`
+  - 是否启用 `spreadsheet` 转换与 `spreadsheet` warm worker
+- `ENABLE_PPT`
+  - 默认值：`false`
+  - 是否启用 `presentation` 转换与 `presentation` warm worker
 
 ### 启动脚本相关配置
 

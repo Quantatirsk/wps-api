@@ -7,7 +7,12 @@ import time
 
 from fastapi import UploadFile
 
-from app.config import Settings
+from app.config import (
+    FAMILY_PRESENTATION,
+    FAMILY_SPREADSHEET,
+    FAMILY_WRITER,
+    Settings,
+)
 from app.runtime.warm_session_manager import get_warm_session_manager
 from app.utils.errors import (
     ConversionTimeoutError,
@@ -65,14 +70,13 @@ class BatchConversionResult:
 
 
 ROUTES_BY_SUFFIX: dict[str, str] = {
-    ".doc": "writer",
-    ".docx": "writer",
-    ".ppt": "presentation",
-    ".pptx": "presentation",
-    ".xls": "spreadsheet",
-    ".xlsx": "spreadsheet",
+    ".doc": FAMILY_WRITER,
+    ".docx": FAMILY_WRITER,
+    ".ppt": FAMILY_PRESENTATION,
+    ".pptx": FAMILY_PRESENTATION,
+    ".xls": FAMILY_SPREADSHEET,
+    ".xlsx": FAMILY_SPREADSHEET,
 }
-SUPPORTED_SUFFIXES = ", ".join(sorted(ROUTES_BY_SUFFIX))
 
 
 class ConversionService:
@@ -237,9 +241,24 @@ class ConversionService:
         document_family = ROUTES_BY_SUFFIX.get(suffix)
         if document_family is None:
             raise UnsupportedFormatError(
-                f"unsupported file format, supported formats: {SUPPORTED_SUFFIXES}"
+                "unsupported file format, supported formats: "
+                f"{self._build_enabled_suffixes_label()}"
+            )
+        if not self.settings.is_family_enabled(document_family):
+            raise UnsupportedFormatError(
+                f"file format is currently disabled: {suffix or '<missing suffix>'}"
             )
         return document_family
+
+    def _build_enabled_suffixes_label(self) -> str:
+        enabled_suffixes = [
+            suffix
+            for suffix, family in sorted(ROUTES_BY_SUFFIX.items())
+            if self.settings.is_family_enabled(family)
+        ]
+        if not enabled_suffixes:
+            return "none"
+        return ", ".join(enabled_suffixes)
 
     def _validate_file_size(self, size: int, job_paths: JobPaths) -> None:
         if size > self.settings.max_upload_size_bytes:
