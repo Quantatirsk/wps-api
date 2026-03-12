@@ -183,6 +183,7 @@ no_cache="$(normalize_bool "${no_cache}")"
 assume_yes="$(normalize_bool "${assume_yes}")"
 primary_ref="${image_name}:${image_tag}"
 extra_tags=()
+has_extra_tags="false"
 push_refs=("${primary_ref}")
 is_multi_platform="false"
 build_mode="docker"
@@ -194,11 +195,13 @@ fi
 
 if [[ "${target_platform}" == "linux/arm64" && "${image_tag}" != "latest" ]]; then
   extra_tags+=("latest")
+  has_extra_tags="true"
   push_refs+=("${image_name}:latest")
 fi
 
 if [[ "${is_multi_platform}" == "true" && "${image_tag}" != "latest" ]]; then
   extra_tags=("latest")
+  has_extra_tags="true"
   push_refs=("${primary_ref}" "${image_name}:latest")
 fi
 
@@ -226,10 +229,13 @@ append_build_arg_if_set "WPS_DEB_URL_BASE"
 append_build_arg_if_set "PYWPSRPC_WHEEL_URL"
 append_build_arg_if_set "FONTS_ZIP_URL"
 
-if [[ "${build_mode}" == "buildx" ]]; then
+if [[ "${build_mode}" == "buildx" && "${has_extra_tags}" == "true" ]]; then
   for extra_tag in "${extra_tags[@]}"; do
     build_cmd+=(-t "${image_name}:${extra_tag}")
   done
+fi
+
+if [[ "${build_mode}" == "buildx" ]]; then
   build_cmd+=(--push)
 fi
 
@@ -253,7 +259,7 @@ fi
 if [[ -n "${FONTS_ZIP_URL:-}" ]]; then
   echo "Override: FONTS_ZIP_URL"
 fi
-if ((${#extra_tags[@]} > 0)); then
+if [[ "${has_extra_tags}" == "true" ]]; then
   echo "Extra tags: ${extra_tags[*]}"
 fi
 echo
@@ -291,14 +297,14 @@ fi
 
 "${build_cmd[@]}"
 
-if [[ "${build_mode}" == "docker" ]]; then
+if [[ "${build_mode}" == "docker" && "${has_extra_tags}" == "true" ]]; then
   for extra_tag in "${extra_tags[@]}"; do
     docker tag "${primary_ref}" "${image_name}:${extra_tag}"
   done
+fi
 
-  if [[ "${push_image}" == "true" ]]; then
-    for ref in "${push_refs[@]}"; do
-      docker push "${ref}"
-    done
-  fi
+if [[ "${build_mode}" == "docker" && "${push_image}" == "true" ]]; then
+  for ref in "${push_refs[@]}"; do
+    docker push "${ref}"
+  done
 fi
