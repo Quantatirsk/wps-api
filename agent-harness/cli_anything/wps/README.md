@@ -1,0 +1,167 @@
+# wps
+
+A command-line interface for the WPS API headless PDF conversion service.
+
+## Overview
+
+`wps` provides a complete CLI harness for interacting with the WPS Office PDF conversion service. It supports converting Word, Excel, and PowerPoint documents to PDF format.
+
+## Installation
+
+### From Source
+
+```bash
+cd agent-harness
+pip install -e .
+```
+
+### Verify Installation
+
+```bash
+which wps
+wps --version
+```
+
+## Quick Start
+
+```bash
+# Check service health
+wps health
+
+# Check service readiness (includes document family status)
+wps ready
+
+# Convert a single document
+wps convert document.docx
+
+# Convert with custom output path
+wps convert document.docx --output /path/to/output.pdf
+
+# Batch convert multiple documents
+wps convert batch *.docx --output batch_output.zip
+```
+
+## Commands
+
+### Health Commands
+
+```bash
+wps health              # Quick liveness check
+wps ready               # Detailed readiness check
+```
+
+### Conversion Commands
+
+```bash
+# Single file conversion
+wps convert single <file> [--output <path>]
+
+# Batch conversion
+wps convert batch <files...> [--output <path>]
+
+# Shortcut for single conversion
+wps convert <file> [--output <path>]
+```
+
+### Configuration Commands
+
+```bash
+wps config show              # Display current configuration
+wps config set <key> <value>  # Set configuration value
+wps config init              # Initialize configuration file
+```
+
+Valid configuration keys:
+- `api_url`: WPS API base URL (default: http://127.0.0.1:18000)
+- `timeout`: Request timeout in seconds (default: 120)
+- `default_output_dir`: Default output directory (default: .)
+
+### REPL Mode
+
+```bash
+wps repl
+```
+
+Interactive shell for executing commands without retyping the prefix.
+
+```
+wps> health
+wps> convert document.docx
+wps> batch *.docx
+wps> exit
+```
+
+## JSON Output
+
+All commands support `--json` flag for machine-parseable output:
+
+```bash
+wps health --json
+wps ready --json
+wps convert document.docx --json
+```
+
+## Configuration
+
+Configuration is stored in `~/.config/wps/config.json`.
+
+If an existing `~/.config/cli-anything-wps/` directory is present, the CLI migrates
+its config and session files into the new location automatically.
+
+Environment variables (override config file):
+- `WPS_API_URL`: Service base URL
+- `WPS_TIMEOUT`: Request timeout in seconds
+
+## Supported Formats
+
+| Format | Extensions | Default Enabled |
+|--------|------------|-----------------|
+| Word | .doc, .docx | Yes |
+| Excel | .xls, .xlsx | No |
+| PowerPoint | .ppt, .pptx | No |
+
+Enable additional families via service configuration (ENABLE_EXCEL, ENABLE_PPT).
+
+## Error Codes
+
+| Code | Description |
+|------|-------------|
+| `UNSUPPORTED_FORMAT` | File format not supported |
+| `FAMILY_DISABLED` | Document family not enabled |
+| `SERVICE_UNAVAILABLE` | Service not reachable or not ready |
+| `CONVERSION_TIMEOUT` | Conversion exceeded timeout |
+| `PAYLOAD_TOO_LARGE` | File exceeds size limit |
+| `CONFIG_ERROR` | Configuration file error |
+
+## Development
+
+### Project Structure
+
+```
+cli_anything/wps/
+├── __init__.py
+├── wps_cli.py         # Main CLI entry
+├── core/              # Core command modules
+│   ├── config.py      # Configuration management
+│   ├── convert.py     # Document conversion
+│   ├── health.py      # Health checks
+│   ├── repl.py        # REPL mode
+│   └── state.py       # State persistence
+├── utils/             # Utilities
+│   ├── errors.py      # Error handling
+│   ├── http_client.py # API client
+│   └── output.py      # Output formatting
+└── tests/             # Test suite
+```
+
+### Running Tests
+
+```bash
+cd agent-harness
+pip install -e ".[dev]"
+pytest cli_anything/wps/tests/ -v
+```
+
+## License
+
+MIT
